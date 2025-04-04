@@ -48,6 +48,9 @@ public:
 
     // Register a message handler callback
     virtual void RegisterMessageHandler(TFunction<void(const FString&, const TArray<uint8>&)> Handler) = 0;
+
+    // 서버 탐색 메서드 추가 (override 키워드 없이)
+    virtual bool DiscoverServers() = 0;
 };
 
 /**

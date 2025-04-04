@@ -1,6 +1,7 @@
 ﻿// Copyright Your Company. All Rights Reserved.
 
 using UnrealBuildTool;
+using System.IO;
 
 public class MultiServerSyncEditor : ModuleRules
 {
@@ -10,14 +11,16 @@ public class MultiServerSyncEditor : ModuleRules
 
         PublicIncludePaths.AddRange(
             new string[] {
-				// ... add public include paths required here ...
-			}
+                // ... add public include paths required here ...
+            }
         );
 
         PrivateIncludePaths.AddRange(
             new string[] {
-				// ... add private include paths required here ...
-			}
+                // MultiServerSync 모듈의 Private 경로 추가
+                Path.Combine(ModuleDirectory, "../MultiServerSync/Private"),
+                // ... add private include paths required here ...
+            }
         );
 
         PublicDependencyModuleNames.AddRange(
@@ -27,8 +30,8 @@ public class MultiServerSyncEditor : ModuleRules
                 "CoreUObject",
                 "Engine",
                 "MultiServerSync"
-				// ... add other public dependencies that you statically link with here ...
-			}
+                // ... add other public dependencies that you statically link with here ...
+            }
         );
 
         PrivateDependencyModuleNames.AddRange(
@@ -41,15 +44,29 @@ public class MultiServerSyncEditor : ModuleRules
                 "Slate",
                 "SlateCore",
                 "EditorStyle",
-				// ... add private dependencies that you statically link with here ...	
-			}
+                // ... add private dependencies that you statically link with here ...
+            }
         );
+
+        // 이 부분을 추가합니다
+        PrivateIncludePathModuleNames.AddRange(
+            new string[]
+            {
+                "MultiServerSync",
+            }
+        );
+
+        // 모듈 바인딩 방식 설정 (런타임 바인딩 대신 컴파일타임에 링크)
+        if (Target.LinkType == TargetLinkType.Monolithic)
+        {
+            PublicAdditionalLibraries.Add("MultiServerSync.lib");
+        }
 
         DynamicallyLoadedModuleNames.AddRange(
             new string[]
             {
-				// ... add any modules that your module loads dynamically here ...
-			}
+                // ... add any modules that your module loads dynamically here ...
+            }
         );
     }
 }

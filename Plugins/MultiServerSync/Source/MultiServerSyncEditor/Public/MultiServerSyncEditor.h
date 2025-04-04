@@ -1,5 +1,4 @@
-﻿// Copyright Your Company. All Rights Reserved.
-
+﻿// MultiServerSyncEditor.h 수정
 #pragma once
 
 #include "CoreMinimal.h"
@@ -12,10 +11,16 @@
 class FMultiServerSyncEditorModule : public IModuleInterface
 {
 public:
-	/** IModuleInterface implementation */
-	virtual void StartupModule() override;
-	virtual void ShutdownModule() override;
+    /** IModuleInterface implementation */
+    virtual void StartupModule() override;
+    virtual void ShutdownModule() override;
 
-	/** Register editor UI extensions */
-	void RegisterMenus();
+    /** Register editor UI extensions */
+    void RegisterMenus();
+
+    /** Show environment information */
+    void ShowEnvironmentInfo();
+
+    /** Run network connectivity test */
+    void RunNetworkTest();
 };

@@ -199,7 +199,7 @@ public:
     // End INetworkManager interface
 
     /** Discover other servers on the network */
-    bool DiscoverServers();
+    virtual bool DiscoverServers() override;
 
     /** Get the list of discovered servers */
     TArray<FString> GetDiscoveredServers() const;
