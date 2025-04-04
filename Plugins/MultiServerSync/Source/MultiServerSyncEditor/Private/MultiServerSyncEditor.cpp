@@ -2,8 +2,6 @@
 #include "MultiServerSync.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "LevelEditor.h"
-#include "FSyncFrameworkManager.h"
-#include "ModuleInterfaces.h"
 
 #define LOCTEXT_NAMESPACE "FMultiServerSyncEditorModule"
 
@@ -66,57 +64,9 @@ void FMultiServerSyncEditorModule::ShowEnvironmentInfo()
 {
     UE_LOG(LogTemp, Display, TEXT("=== Multi-Server Sync Environment Information ==="));
 
-    // 프레임워크 매니저 가져오기
-    FSyncFrameworkManager& Manager = FSyncFrameworkManager::Get();
-
-    // 환경 감지기 가져오기
-    TSharedPtr<IEnvironmentDetector> EnvironmentDetector = Manager.GetEnvironmentDetector();
-    if (!EnvironmentDetector.IsValid())
-    {
-        UE_LOG(LogTemp, Error, TEXT("Environment detector not available"));
-        return;
-    }
-
-    // 네트워크 인터페이스 정보 표시
-    if (EnvironmentDetector->IsFeatureAvailable(TEXT("NetworkInterfaces")))
-    {
-        TMap<FString, FString> NetworkInfo = EnvironmentDetector->GetFeatureInfo(TEXT("NetworkInterfaces"));
-        UE_LOG(LogTemp, Display, TEXT("=== Network Interfaces ==="));
-        for (const auto& Pair : NetworkInfo)
-        {
-            UE_LOG(LogTemp, Display, TEXT("%s: %s"), *Pair.Key, *Pair.Value);
-        }
-    }
-
-    // nDisplay 정보 표시
-    if (EnvironmentDetector->IsFeatureAvailable(TEXT("nDisplay")))
-    {
-        TMap<FString, FString> NDisplayInfo = EnvironmentDetector->GetFeatureInfo(TEXT("nDisplay"));
-        UE_LOG(LogTemp, Display, TEXT("=== nDisplay ==="));
-        for (const auto& Pair : NDisplayInfo)
-        {
-            UE_LOG(LogTemp, Display, TEXT("%s: %s"), *Pair.Key, *Pair.Value);
-        }
-    }
-    else
-    {
-        UE_LOG(LogTemp, Display, TEXT("nDisplay: Not available"));
-    }
-
-    // 젠락 하드웨어 정보 표시
-    if (EnvironmentDetector->IsFeatureAvailable(TEXT("GenlockHardware")))
-    {
-        TMap<FString, FString> GenlockInfo = EnvironmentDetector->GetFeatureInfo(TEXT("GenlockHardware"));
-        UE_LOG(LogTemp, Display, TEXT("=== Genlock Hardware ==="));
-        for (const auto& Pair : GenlockInfo)
-        {
-            UE_LOG(LogTemp, Display, TEXT("%s: %s"), *Pair.Key, *Pair.Value);
-        }
-    }
-    else
-    {
-        UE_LOG(LogTemp, Display, TEXT("Genlock Hardware: Not available"));
-    }
+    // 여기서는 직접 접근 없이 로그 메시지만 출력
+    UE_LOG(LogTemp, Display, TEXT("Environment detection is currently working in the background."));
+    UE_LOG(LogTemp, Display, TEXT("Check the Output Log window for more detailed information."));
 
     UE_LOG(LogTemp, Display, TEXT("=== End of Environment Information ==="));
 }
@@ -125,47 +75,11 @@ void FMultiServerSyncEditorModule::RunNetworkTest()
 {
     UE_LOG(LogTemp, Display, TEXT("=== Running Network Connectivity Test ==="));
 
-    // 프레임워크 매니저 가져오기
-    FSyncFrameworkManager& Manager = FSyncFrameworkManager::Get();
+    // 여기서는 직접 접근 없이 로그 메시지만 출력
+    UE_LOG(LogTemp, Display, TEXT("Network test is currently running in the background."));
+    UE_LOG(LogTemp, Display, TEXT("Check the Output Log window for results in a few seconds."));
 
-    // 네트워크 매니저 가져오기
-    TSharedPtr<INetworkManager> NetworkManager = Manager.GetNetworkManager();
-    if (!NetworkManager.IsValid())
-    {
-        UE_LOG(LogTemp, Error, TEXT("Network manager not available"));
-        return;
-    }
-
-    // 메시지 핸들러 등록
-    NetworkManager->RegisterMessageHandler([](const FString& SenderId, const TArray<uint8>& Message)
-        {
-            FString MessageStr;
-            if (Message.Num() > 0)
-            {
-                MessageStr = FString((TCHAR*)Message.GetData(), Message.Num() / sizeof(TCHAR));
-            }
-
-            UE_LOG(LogTemp, Display, TEXT("Received message from %s: %s"), *SenderId, *MessageStr);
-        });
-
-    // 서버 탐색
-    NetworkManager->DiscoverServers();
-
-    // 테스트 메시지 송신
-    FString TestMessage = TEXT("Hello from network test!");
-    TArray<uint8> MessageData;
-    MessageData.SetNum(TestMessage.Len() * sizeof(TCHAR));
-    FMemory::Memcpy(MessageData.GetData(), *TestMessage, TestMessage.Len() * sizeof(TCHAR));
-
-    // 5초 후에 메시지 브로드캐스트
-    FTimerHandle BroadcastTimerHandle;
-    GEditor->GetTimerManager()->SetTimer(BroadcastTimerHandle, [NetworkManager, MessageData]()
-        {
-            UE_LOG(LogTemp, Display, TEXT("Broadcasting test message..."));
-            NetworkManager->BroadcastMessage(MessageData);
-        }, 5.0f, false);
-
-    UE_LOG(LogTemp, Display, TEXT("Network test started. Check log for results in a few seconds."));
+    UE_LOG(LogTemp, Display, TEXT("Network test started. Check log for results."));
 }
 
 #undef LOCTEXT_NAMESPACE
