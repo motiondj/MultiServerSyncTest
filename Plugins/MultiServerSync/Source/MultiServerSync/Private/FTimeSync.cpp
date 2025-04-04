@@ -40,12 +40,15 @@ bool FTimeSync::Initialize()
         return false;
     }
 
-    // 소프트웨어 PLL 초기화 (다음 단계에서 구현)
+    // 소프트웨어 PLL 초기화
     if (!SoftwarePLL->Initialize())
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to initialize Software PLL"));
         return false;
     }
+
+    // PLL 매개변수 설정 (P 게인, I 게인, 필터 가중치)
+    SoftwarePLL->Configure(0.5, 0.01, 0.5);
 
     LastSyncTime = GetLocalTimeMicroseconds();
     LastUpdateTime = LastSyncTime;
@@ -179,6 +182,7 @@ void FTimeSync::SendSyncMessage()
     PTPClient->SendSyncMessage();
 }
 
+// FTimeSync.cpp - UpdateTimeSync 함수 수정
 void FTimeSync::UpdateTimeSync()
 {
     if (!bIsInitialized || !PTPClient.IsValid())
@@ -214,11 +218,31 @@ void FTimeSync::UpdateTimeSync()
         EstimatedErrorMicroseconds = PTPClient->GetEstimatedErrorMicroseconds();
         bIsSynchronized = PTPClient->IsSynchronized();
 
+        // PLL에 측정값 업데이트 (PTP에서 계산된 시간 오프셋 사용)
+        if (SoftwarePLL.IsValid() && bIsSynchronized)
+        {
+            SoftwarePLL->UpdateWithMeasurement(TimeOffsetMicroseconds, CurrentTime);
+
+            // PLL의 위상 조정값을 시간 오프셋에 반영
+            if (SoftwarePLL->IsLocked())
+            {
+                // PLL이 안정화되면 PLL의 오프셋을 사용
+                TimeOffsetMicroseconds = SoftwarePLL->GetPhaseAdjustment();
+
+                // 오차 추정값도 업데이트
+                EstimatedErrorMicroseconds = FMath::Min(
+                    EstimatedErrorMicroseconds,
+                    FMath::Abs(SoftwarePLL->GetEstimatedErrorMicroseconds()));
+            }
+        }
+
         // 디버깅 정보 주기적 로깅 (1초마다)
         if (CurrentTime - LastSyncTime >= 1000000)
         {
-            UE_LOG(LogMultiServerSync, Verbose, TEXT("Time Sync Status: offset=%lld us, error=%lld us, sync=%s"),
-                TimeOffsetMicroseconds, EstimatedErrorMicroseconds, bIsSynchronized ? TEXT("true") : TEXT("false"));
+            UE_LOG(LogMultiServerSync, Verbose, TEXT("Time Sync Status: offset=%lld us, error=%lld us, sync=%s, pll_locked=%s"),
+                TimeOffsetMicroseconds, EstimatedErrorMicroseconds,
+                bIsSynchronized ? TEXT("true") : TEXT("false"),
+                (SoftwarePLL.IsValid() && SoftwarePLL->IsLocked()) ? TEXT("true") : TEXT("false"));
             LastSyncTime = CurrentTime;
         }
     }
