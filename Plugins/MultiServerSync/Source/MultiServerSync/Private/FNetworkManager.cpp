@@ -729,7 +729,40 @@ void FNetworkManager::HandleDiscoveryResponseMessage(const FNetworkMessage& Mess
 
 void FNetworkManager::HandleTimeSyncMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
 {
-    // 시간 동기화 메시지 처리 (모듈 3에서 구현 예정)
+    // 발신자 ID 찾기
+    FString SenderId;
+    for (const auto& Pair : DiscoveredServers)
+    {
+        if (Pair.Value.IPAddress == Sender.Address && Pair.Value.Port == Sender.Port)
+        {
+            SenderId = Pair.Key;
+            break;
+        }
+    }
+
+    if (SenderId.IsEmpty())
+    {
+        SenderId = Sender.ToString();
+    }
+
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Received time sync message from %s"), *SenderId);
+
+    // 메시지를 TimeSync 모듈로 전달
+    // 이 함수는 프레임워크 매니저를 통해 TimeSync 모듈에 접근해야 함
+    // 실제 구현에서는 아래 코드의 주석을 해제하고 프레임워크 매니저 참조를 가져와야 함
+    /*
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    if (FrameworkManager.IsValid())
+    {
+        TSharedPtr<ITimeSync> TimeSync = FrameworkManager->GetTimeSync();
+        if (TimeSync.IsValid())
+        {
+            // TimeSync를 FTimeSync로 캐스팅하여 PTP 메시지 처리 함수 호출
+            FTimeSync* TimeSyncImpl = static_cast<FTimeSync*>(TimeSync.Get());
+            TimeSyncImpl->ProcessPTPMessage(Message.GetData());
+        }
+    }
+    */
 }
 
 void FNetworkManager::HandleFrameSyncMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
@@ -791,4 +824,20 @@ bool FNetworkManager::HasEnoughTimePassed(double& LastTime, double Interval) con
     }
     
     return false;
+}
+
+bool FNetworkManager::SendTimeSyncMessage(const TArray<uint8>& PTPMessage)
+{
+    if (!bIsInitialized)
+    {
+        return false;
+    }
+
+    // 시간 동기화 메시지 생성
+    FNetworkMessage Message(ENetworkMessageType::TimeSync, PTPMessage);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    // 모든 서버에 브로드캐스트
+    return BroadcastMessageToServers(Message);
 }

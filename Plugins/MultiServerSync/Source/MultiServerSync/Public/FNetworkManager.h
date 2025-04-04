@@ -237,6 +237,9 @@ public:
     /** 브로드캐스트 포트 번호 */
     static const int32 BROADCAST_PORT = 7001;
 
+    /** 시간 동기화 메시지 전송 */
+    bool SendTimeSyncMessage(const TArray<uint8>& PTPMessage);
+
 private:
     /** Broadcast socket for server discovery */
     FSocket* BroadcastSocket;

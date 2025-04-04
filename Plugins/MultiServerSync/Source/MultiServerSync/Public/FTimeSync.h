@@ -1,5 +1,4 @@
-﻿// Copyright Your Company. All Rights Reserved.
-
+﻿// FTimeSync.h
 #pragma once
 
 #include "CoreMinimal.h"
@@ -45,6 +44,12 @@ public:
     /** Get the offset between local and master time in microseconds */
     int64 GetTimeOffsetMicroseconds() const;
 
+    /** Set sync interval in milliseconds */
+    void SetSyncInterval(int32 IntervalMs);
+
+    /** Get sync interval in milliseconds */
+    int32 GetSyncInterval() const;
+
 private:
     /** PTP client implementation */
     TUniquePtr<FPTPClient> PTPClient;
@@ -72,6 +77,9 @@ private:
 
     /** Sync interval in milliseconds */
     int32 SyncIntervalMs;
+
+    /** Last update time */
+    int64 LastUpdateTime;
 
     /** Send a sync message if in master mode */
     void SendSyncMessage();
