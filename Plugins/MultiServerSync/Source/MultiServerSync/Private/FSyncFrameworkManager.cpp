@@ -61,6 +61,25 @@ bool FSyncFrameworkManager::Initialize()
         return false;
     }
 
+    // 모듈 간 연결 - 메시지 핸들러 설정
+    // NetworkManager에 TimeSync 메시지 핸들러 등록
+    if (NetworkManager.IsValid() && TimeSync.IsValid())
+    {
+        // 네트워크 매니저 구현체 가져오기
+        FNetworkManager* NetworkManagerImpl = static_cast<FNetworkManager*>(NetworkManager.Get());
+        // 시간 동기화 구현체 가져오기
+        FTimeSync* TimeSyncImpl = static_cast<FTimeSync*>(TimeSync.Get());
+
+        // 메시지 핸들러 등록
+        NetworkManagerImpl->RegisterMessageHandler(
+            [TimeSyncImpl](const FString& SenderId, const TArray<uint8>& Data)
+            {
+                // 시간 동기화 메시지만 처리
+                TimeSyncImpl->ProcessPTPMessage(Data);
+            }
+        );
+    }
+
     bIsInitialized = true;
     MSYNC_LOG_INFO(TEXT("FSyncFrameworkManager initialized successfully"));
 

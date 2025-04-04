@@ -1,5 +1,8 @@
 ﻿#include "FNetworkManager.h"
 #include "FSyncLog.h"
+#include "FTimeSync.h"
+#include "MultiServerSync.h"
+#include "ISyncFrameworkManager.h"
 #include "Serialization/BufferArchive.h"
 #include "IPAddress.h"
 #include "Misc/DateTime.h"
@@ -748,9 +751,11 @@ void FNetworkManager::HandleTimeSyncMessage(const FNetworkMessage& Message, cons
     UE_LOG(LogMultiServerSync, Verbose, TEXT("Received time sync message from %s"), *SenderId);
 
     // 메시지를 TimeSync 모듈로 전달
-    // 이 함수는 프레임워크 매니저를 통해 TimeSync 모듈에 접근해야 함
-    // 실제 구현에서는 아래 코드의 주석을 해제하고 프레임워크 매니저 참조를 가져와야 함
+    // 이 부분은 직접 구현하기보다 주석으로 표시만 하고,
+    // 나중에 필요할 때 FSyncFrameworkManager에서 구현하는 것이 좋습니다.
+
     /*
+    // 직접적인 모듈 참조는 순환 의존성을 일으킬 수 있으므로 주석 처리
     TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (FrameworkManager.IsValid())
     {
@@ -763,6 +768,28 @@ void FNetworkManager::HandleTimeSyncMessage(const FNetworkMessage& Message, cons
         }
     }
     */
+
+    // 대신, 메시지 핸들러가 설정되어 있으면 그것을 호출합니다
+    if (MessageHandler)
+    {
+        MessageHandler(SenderId, Message.GetData());
+    }
+}
+
+bool FNetworkManager::SendTimeSyncMessage(const TArray<uint8>& PTPMessage)
+{
+    if (!bIsInitialized)
+    {
+        return false;
+    }
+
+    // 시간 동기화 메시지 생성
+    FNetworkMessage Message(ENetworkMessageType::TimeSync, PTPMessage);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    // 모든 서버에 브로드캐스트
+    return BroadcastMessageToServers(Message);
 }
 
 void FNetworkManager::HandleFrameSyncMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
@@ -824,20 +851,4 @@ bool FNetworkManager::HasEnoughTimePassed(double& LastTime, double Interval) con
     }
     
     return false;
-}
-
-bool FNetworkManager::SendTimeSyncMessage(const TArray<uint8>& PTPMessage)
-{
-    if (!bIsInitialized)
-    {
-        return false;
-    }
-
-    // 시간 동기화 메시지 생성
-    FNetworkMessage Message(ENetworkMessageType::TimeSync, PTPMessage);
-    Message.SetProjectId(ProjectId);
-    Message.SetSequenceNumber(GetNextSequenceNumber());
-
-    // 모든 서버에 브로드캐스트
-    return BroadcastMessageToServers(Message);
 }

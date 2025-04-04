@@ -178,8 +178,12 @@ void FTimeSync::SendSyncMessage()
         return;
     }
 
-    // PTP 클라이언트의 Sync 메시지 전송 함수 호출
+    // PTP 클라이언트의 Sync 메시지 생성 및 전송
     PTPClient->SendSyncMessage();
+
+    // NetworkManager를 통해 Sync 메시지를 전송
+    // 이 부분은 FSyncFrameworkManager를 통해 NetworkManager에 접근해야 함
+    // 아직 구현되지 않은 부분
 }
 
 // FTimeSync.cpp - UpdateTimeSync 함수 수정
