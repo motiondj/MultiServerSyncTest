@@ -4,6 +4,7 @@
 #include "HAL/PlatformTime.h"
 #include "HAL/PlatformProcess.h"
 #include "Misc/App.h"
+#include "Containers/Ticker.h"
 
 FFrameSyncController::FFrameSyncController()
     : SyncedFrameNumber(0)
@@ -104,6 +105,13 @@ void FFrameSyncController::HandleEngineTick(float DeltaTime)
             SyncedFrameNumber, FrameTimingAdjustmentMs, bIsSynchronized ? TEXT("true") : TEXT("false"));
         LastLogTime = CurrentTime;
     }
+}
+
+// 틱 핸들러 - HandleEngineTick에 전달하는 래퍼
+bool FFrameSyncController::TickHandler(float DeltaTime)
+{
+    HandleEngineTick(DeltaTime);
+    return true; // 계속 틱 수신
 }
 
 void FFrameSyncController::UpdateFrameTiming()
@@ -209,13 +217,12 @@ float FFrameSyncController::GetFrameTimingAdjustmentMs() const
 
 void FFrameSyncController::RegisterEngineCallbacks()
 {
-    // 엔진 틱 델리게이트 등록 - FTSTicker 대신 FTicker 사용
-    TickDelegateHandle = FTicker::GetCoreTicker().AddTicker(
-        FTickerDelegate::CreateRaw(this, &FFrameSyncController::HandleEngineTick));
+    // 언리얼 엔진 5.5에서는 FTicker를 사용하는 방법이 다름
+    // FTSTicker::GetCoreTicker().AddTicker() 형식 대신 직접 함수 델리게이트 사용
 
-    // PreRender 델리게이트는 GameEngine 또는 UEngine에서 직접 연결하는 대신
-    // GEngine에서 OnBeginFrame 또는 유사한 델리게이트를 사용하거나,
-    // 여기서는 단순히 별도 틱으로 처리
+    // 틱 델리게이트 등록
+    FTickerDelegate TickDelegate = FTickerDelegate::CreateRaw(this, &FFrameSyncController::TickHandler);
+    TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(TickDelegate);
 
     UE_LOG(LogMultiServerSync, Display, TEXT("Engine callbacks registered"));
 }
@@ -223,9 +230,7 @@ void FFrameSyncController::RegisterEngineCallbacks()
 void FFrameSyncController::UnregisterEngineCallbacks()
 {
     // 틱 델리게이트 등록 해제
-    FTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
-
-    // PreRender 델리게이트 사용하지 않음
+    FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
 
     UE_LOG(LogMultiServerSync, Display, TEXT("Engine callbacks unregistered"));
 }
@@ -243,7 +248,7 @@ void FFrameSyncController::HandlePreRender()
         // 여기서 렌더링 타이밍을 조정할 수 있음
         // 실제 구현에서는 렌더링 파이프라인과 더 깊게 통합
 
-        UE_LOG(LogMultiServerSync, VeryVerbose, TEXT("Pre-render timing adjustment: %.2f ms"), FrameTimingAdjustmentMs);
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Pre-render timing adjustment: %.2f ms"), FrameTimingAdjustmentMs);
 
         // 조정이 필요한 경우 FPS 제한 조정 또는 스레드 슬립 사용 가능
         if (FrameTimingAdjustmentMs > 0.0f)

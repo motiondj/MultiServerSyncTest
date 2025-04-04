@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "ModuleInterfaces.h"
+#include "Containers/Ticker.h"
 
 /**
  * Frame synchronization controller class that implements the IFrameSyncController interface
@@ -35,6 +36,9 @@ public:
     /** Handle engine tick */
     void HandleEngineTick(float DeltaTime);
 
+    /** Ticker delegate handler - returns true to continue ticking */
+    bool TickHandler(float DeltaTime);
+
     /** Update frame timing based on synchronized time */
     void UpdateFrameTiming();
 
@@ -51,8 +55,8 @@ private:
     /** Engine pre-render delegate handle */
     FDelegateHandle PreRenderDelegateHandle;
 
-    /** Engine tick delegate handle */
-    FDelegateHandle TickDelegateHandle;
+    /** Engine tick delegate handle - FTSTicker용 핸들 */
+    FTSTicker::FDelegateHandle TickDelegateHandle;
 
     /** Current synced frame number */
     int64 SyncedFrameNumber;
