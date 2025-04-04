@@ -1,17 +1,17 @@
 {
 	"FileVersion": 3,
 	"Version": 1,
-	"VersionName": "1.0",
-	"FriendlyName": "MultiServerSync",
-	"Description": "",
-	"Category": "Other",
-	"CreatedBy": "",
+	"VersionName": "0.1",
+	"FriendlyName": "Multi-Server Synchronization Framework",
+	"Description": "Precise frame synchronization for Unreal Engine projects running across multiple servers",
+	"Category": "Networking",
+	"CreatedBy": "Your Name",
 	"CreatedByURL": "",
 	"DocsURL": "",
 	"MarketplaceURL": "",
 	"SupportURL": "",
 	"CanContainContent": true,
-	"IsBetaVersion": false,
+	"IsBetaVersion": true,
 	"IsExperimentalVersion": false,
 	"Installed": false,
 	"Modules": [
@@ -19,6 +19,11 @@
 			"Name": "MultiServerSync",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "MultiServerSyncEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit"
 		}
 	]
 }
