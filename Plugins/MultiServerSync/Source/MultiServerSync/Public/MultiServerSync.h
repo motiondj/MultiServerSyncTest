@@ -1,9 +1,11 @@
-﻿// Copyright Your Company. All Rights Reserved.
-
+﻿// Plugins/MultiServerSync/Source/MultiServerSync/Public/MultiServerSync.h
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
+
+// 전방 선언
+class ISyncFrameworkManager;
 
 /**
  * Multi-Server Synchronization Framework Module
@@ -12,23 +14,26 @@
 class FMultiServerSyncModule : public IModuleInterface
 {
 public:
-	/** IModuleInterface implementation */
-	virtual void StartupModule() override;
-	virtual void ShutdownModule() override;
+    /** IModuleInterface implementation */
+    virtual void StartupModule() override;
+    virtual void ShutdownModule() override;
 
-	/** Singleton accessor */
-	static FMultiServerSyncModule& Get()
-	{
-		return FModuleManager::LoadModuleChecked<FMultiServerSyncModule>("MultiServerSync");
-	}
+    /** Singleton accessor */
+    static FMultiServerSyncModule& Get()
+    {
+        return FModuleManager::LoadModuleChecked<FMultiServerSyncModule>("MultiServerSync");
+    }
 
-	/** Check if the module is loaded and ready */
-	static bool IsAvailable()
-	{
-		return FModuleManager::Get().IsModuleLoaded("MultiServerSync");
-	}
+    /** Check if the module is loaded and ready */
+    static bool IsAvailable()
+    {
+        return FModuleManager::Get().IsModuleLoaded("MultiServerSync");
+    }
+
+    /** Get the framework manager */
+    static TSharedPtr<ISyncFrameworkManager> GetFrameworkManager();
 
 private:
-	/** Module implementation details */
-	class FMultiServerSyncModuleImpl* ModuleImpl;
+    /** Framework manager instance */
+    static TSharedPtr<ISyncFrameworkManager> FrameworkManager;
 };

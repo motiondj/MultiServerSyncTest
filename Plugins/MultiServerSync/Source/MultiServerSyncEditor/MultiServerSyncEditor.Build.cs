@@ -11,15 +11,14 @@ public class MultiServerSyncEditor : ModuleRules
 
         PublicIncludePaths.AddRange(
             new string[] {
-                // ... add public include paths required here ...
+                // 공용 헤더 경로 추가
             }
         );
 
         PrivateIncludePaths.AddRange(
             new string[] {
-                // MultiServerSync 모듈의 Private 경로 추가
-                Path.Combine(ModuleDirectory, "../MultiServerSync/Private"),
-                // ... add private include paths required here ...
+                // MultiServerSync 모듈의 Public 경로를 명시적으로 포함
+                Path.Combine(ModuleDirectory, "../MultiServerSync/Public"),
             }
         );
 
@@ -29,8 +28,7 @@ public class MultiServerSyncEditor : ModuleRules
                 "Core",
                 "CoreUObject",
                 "Engine",
-                "MultiServerSync"
-                // ... add other public dependencies that you statically link with here ...
+                "MultiServerSync" // 런타임 모듈에 대한 의존성
             }
         );
 
@@ -44,11 +42,12 @@ public class MultiServerSyncEditor : ModuleRules
                 "Slate",
                 "SlateCore",
                 "EditorStyle",
-                // ... add private dependencies that you statically link with here ...
+                "Networking",
+                "Sockets"
             }
         );
 
-        // 이 부분을 추가합니다
+        // 모듈 바인딩 설정
         PrivateIncludePathModuleNames.AddRange(
             new string[]
             {
@@ -56,17 +55,12 @@ public class MultiServerSyncEditor : ModuleRules
             }
         );
 
-        // 모듈 바인딩 방식 설정 (런타임 바인딩 대신 컴파일타임에 링크)
-        if (Target.LinkType == TargetLinkType.Monolithic)
-        {
-            PublicAdditionalLibraries.Add("MultiServerSync.lib");
-        }
+        // 제거: DynamicallyLoadedModuleNames 설정 부분 제거
+        // 이미 PublicDependencyModuleNames에 "MultiServerSync"가 있으므로 
+        // 동적으로 추가할 필요가 없습니다.
 
-        DynamicallyLoadedModuleNames.AddRange(
-            new string[]
-            {
-                // ... add any modules that your module loads dynamically here ...
-            }
-        );
+        // 추가적인 설정 (필요 시)
+        bLegacyPublicIncludePaths = false;
+        OptimizeCode = CodeOptimization.Never; // 디버깅을 위한 최적화 없음
     }
 }

@@ -1,18 +1,21 @@
-﻿// Copyright Your Company. All Rights Reserved.
-
+﻿// Plugins/MultiServerSync/Source/MultiServerSync/Public/FSyncFrameworkManager.h
 #pragma once
 
 #include "CoreMinimal.h"
-#include "ModuleInterfaces.h"
+#include "ISyncFrameworkManager.h"
 
-class FSyncFrameworkManager
+/**
+ * Implementation of the synchronization framework manager
+ * Manages all subsystems of the Multi-Server Sync Framework
+ */
+class MULTISERVERSYNC_API FSyncFrameworkManager : public ISyncFrameworkManager
 {
 public:
     /** Constructor */
     FSyncFrameworkManager();
 
     /** Destructor */
-    ~FSyncFrameworkManager();
+    virtual ~FSyncFrameworkManager();
 
     /** Initialize the manager and all subsystems */
     bool Initialize();
@@ -20,25 +23,14 @@ public:
     /** Shutdown the manager and all subsystems */
     void Shutdown();
 
-    /** Get the environment detector subsystem */
-    TSharedPtr<IEnvironmentDetector> GetEnvironmentDetector() const;
-
-    /** Get the network manager subsystem */
-    TSharedPtr<INetworkManager> GetNetworkManager() const;
-
-    /** Get the time synchronization subsystem */
-    TSharedPtr<ITimeSync> GetTimeSync() const;
-
-    /** Get the frame synchronization controller */
-    TSharedPtr<IFrameSyncController> GetFrameSyncController() const;
-
-    /** Get the singleton instance */
-    static FSyncFrameworkManager& Get();
+    // Begin ISyncFrameworkManager interface
+    virtual TSharedPtr<IEnvironmentDetector> GetEnvironmentDetector() const override;
+    virtual TSharedPtr<INetworkManager> GetNetworkManager() const override;
+    virtual TSharedPtr<ITimeSync> GetTimeSync() const override;
+    virtual TSharedPtr<IFrameSyncController> GetFrameSyncController() const override;
+    // End ISyncFrameworkManager interface
 
 private:
-    /** Singleton instance */
-    static TUniquePtr<FSyncFrameworkManager> Instance;
-
     /** Environment detector subsystem */
     TSharedPtr<IEnvironmentDetector> EnvironmentDetector;
 

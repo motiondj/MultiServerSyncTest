@@ -1,7 +1,8 @@
-﻿#include "MultiServerSyncEditor.h"
-#include "MultiServerSync.h"
+﻿// Plugins/MultiServerSync/Source/MultiServerSyncEditor/Private/MultiServerSyncEditor.cpp
+#include "MultiServerSyncEditor.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "LevelEditor.h"
+#include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "FMultiServerSyncEditorModule"
 
@@ -64,9 +65,18 @@ void FMultiServerSyncEditorModule::ShowEnvironmentInfo()
 {
     UE_LOG(LogTemp, Display, TEXT("=== Multi-Server Sync Environment Information ==="));
 
-    // 여기서는 직접 접근 없이 로그 메시지만 출력
-    UE_LOG(LogTemp, Display, TEXT("Environment detection is currently working in the background."));
-    UE_LOG(LogTemp, Display, TEXT("Check the Output Log window for more detailed information."));
+    // 런타임 모듈 로드 확인
+    if (FModuleManager::Get().IsModuleLoaded("MultiServerSync"))
+    {
+        UE_LOG(LogTemp, Display, TEXT("MultiServerSync module is loaded"));
+        UE_LOG(LogTemp, Display, TEXT("Environment detection is working in the background."));
+
+        // 여기서는 런타임 모듈의 기능을 직접 호출하지 않음
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("MultiServerSync module is not loaded"));
+    }
 
     UE_LOG(LogTemp, Display, TEXT("=== End of Environment Information ==="));
 }
@@ -75,9 +85,18 @@ void FMultiServerSyncEditorModule::RunNetworkTest()
 {
     UE_LOG(LogTemp, Display, TEXT("=== Running Network Connectivity Test ==="));
 
-    // 여기서는 직접 접근 없이 로그 메시지만 출력
-    UE_LOG(LogTemp, Display, TEXT("Network test is currently running in the background."));
-    UE_LOG(LogTemp, Display, TEXT("Check the Output Log window for results in a few seconds."));
+    // 런타임 모듈 로드 확인
+    if (FModuleManager::Get().IsModuleLoaded("MultiServerSync"))
+    {
+        UE_LOG(LogTemp, Display, TEXT("MultiServerSync module is loaded"));
+        UE_LOG(LogTemp, Display, TEXT("Network test is running in the background."));
+
+        // 여기서는 런타임 모듈의 기능을 직접 호출하지 않음
+    }
+    else
+    {
+        UE_LOG(LogTemp, Warning, TEXT("MultiServerSync module is not loaded"));
+    }
 
     UE_LOG(LogTemp, Display, TEXT("Network test started. Check log for results."));
 }

@@ -1,59 +1,45 @@
-﻿// Copyright Your Company. All Rights Reserved.
-
+﻿// Plugins/MultiServerSync/Source/MultiServerSync/Private/MultiServerSync.cpp
 #include "MultiServerSync.h"
+#include "ISyncFrameworkManager.h"
+#include "FSyncFrameworkManager.h"
 #include "Modules/ModuleManager.h"
-#include "Interfaces/IPluginManager.h"
 
 #define LOCTEXT_NAMESPACE "FMultiServerSyncModule"
 
-/**
- * Module implementation details
- */
-class FMultiServerSyncModuleImpl
-{
-public:
-	FMultiServerSyncModuleImpl()
-	{
-		UE_LOG(LogTemp, Log, TEXT("MultiServerSync: Module implementation created"));
-	}
-
-	~FMultiServerSyncModuleImpl()
-	{
-		UE_LOG(LogTemp, Log, TEXT("MultiServerSync: Module implementation destroyed"));
-	}
-
-	// Initialize the module
-	void Initialize()
-	{
-		UE_LOG(LogTemp, Log, TEXT("MultiServerSync: Module initialization"));
-	}
-
-	// Shutdown the module
-	void Shutdown()
-	{
-		UE_LOG(LogTemp, Log, TEXT("MultiServerSync: Module shutdown"));
-	}
-};
+// Static member initialization
+TSharedPtr<ISyncFrameworkManager> FMultiServerSyncModule::FrameworkManager = nullptr;
 
 void FMultiServerSyncModule::StartupModule()
 {
-	// Create and initialize module implementation
-	ModuleImpl = new FMultiServerSyncModuleImpl();
-	ModuleImpl->Initialize();
+    // 프레임워크 매니저 생성
+    FrameworkManager = MakeShared<FSyncFrameworkManager>();
 
-	UE_LOG(LogTemp, Log, TEXT("MultiServerSync: Module started"));
+    // 초기화
+    if (FrameworkManager.IsValid())
+    {
+        FSyncFrameworkManager* Manager = static_cast<FSyncFrameworkManager*>(FrameworkManager.Get());
+        Manager->Initialize();
+    }
+
+    UE_LOG(LogTemp, Log, TEXT("MultiServerSync: Module started"));
 }
 
 void FMultiServerSyncModule::ShutdownModule()
 {
-	if (ModuleImpl)
-	{
-		ModuleImpl->Shutdown();
-		delete ModuleImpl;
-		ModuleImpl = nullptr;
-	}
+    // 프레임워크 매니저 종료
+    if (FrameworkManager.IsValid())
+    {
+        FSyncFrameworkManager* Manager = static_cast<FSyncFrameworkManager*>(FrameworkManager.Get());
+        Manager->Shutdown();
+        FrameworkManager.Reset();
+    }
 
-	UE_LOG(LogTemp, Log, TEXT("MultiServerSync: Module stopped"));
+    UE_LOG(LogTemp, Log, TEXT("MultiServerSync: Module stopped"));
+}
+
+TSharedPtr<ISyncFrameworkManager> FMultiServerSyncModule::GetFrameworkManager()
+{
+    return FrameworkManager;
 }
 
 #undef LOCTEXT_NAMESPACE

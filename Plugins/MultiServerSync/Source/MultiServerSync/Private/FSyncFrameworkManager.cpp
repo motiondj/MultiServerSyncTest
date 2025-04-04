@@ -1,14 +1,10 @@
-﻿// Copyright Your Company. All Rights Reserved.
-
+﻿// Plugins/MultiServerSync/Source/MultiServerSync/Private/FSyncFrameworkManager.cpp
 #include "FSyncFrameworkManager.h"
 #include "FSyncLog.h"
 #include "FEnvironmentDetector.h"
 #include "FNetworkManager.h"
 #include "FTimeSync.h"
 #include "FFrameSyncController.h"
-
-// Static instance initialization
-TUniquePtr<FSyncFrameworkManager> FSyncFrameworkManager::Instance;
 
 FSyncFrameworkManager::FSyncFrameworkManager()
     : bIsInitialized(false)
@@ -133,14 +129,4 @@ TSharedPtr<ITimeSync> FSyncFrameworkManager::GetTimeSync() const
 TSharedPtr<IFrameSyncController> FSyncFrameworkManager::GetFrameSyncController() const
 {
     return FrameSyncController;
-}
-
-FSyncFrameworkManager& FSyncFrameworkManager::Get()
-{
-    if (!Instance.IsValid())
-    {
-        Instance = MakeUnique<FSyncFrameworkManager>();
-    }
-
-    return *Instance;
 }
