@@ -1,12 +1,14 @@
 ﻿// MultiServerSyncTest/Source/MultiServerSyncTest/Private/SyncTestActor.cpp
 #include "SyncTestActor.h"
 #include "Modules/ModuleManager.h"
+#include "Kismet/GameplayStatics.h"
 
 ASyncTestActor::ASyncTestActor()
 {
     PrimaryActorTick.bCanEverTick = true;
     bIsLogging = false;
     LogTimer = 0.0f;
+    bForceMaster = false; // 기본값 설정
 }
 
 void ASyncTestActor::BeginPlay()
@@ -64,9 +66,8 @@ float ASyncTestActor::GetPathDelay() const
 
 bool ASyncTestActor::IsMasterNode() const
 {
-    // 첫 번째 인스턴스는 마스터로 시뮬레이션 (FGuid로 결정)
-    static bool bIsMaster = (FGuid::NewGuid().A % 2 == 0);
-    return bIsMaster;
+    // 강제 마스터 설정이 있으면 해당 설정 사용
+    return bForceMaster;
 }
 
 int32 ASyncTestActor::GetCurrentFrameNumber() const

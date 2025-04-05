@@ -44,6 +44,9 @@ public:
     UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Test")
     void StopLoggingToFile();
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Synchronization")
+    bool bForceMaster;
+
 private:
     bool bIsLogging;
     FString LogFileName;
