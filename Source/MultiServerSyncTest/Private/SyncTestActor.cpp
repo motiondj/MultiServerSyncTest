@@ -2,8 +2,6 @@
 #include "SyncTestActor.h"
 #include "Modules/ModuleManager.h"
 
-// 파일 헤더 문제 해결을 위한 코드
-
 ASyncTestActor::ASyncTestActor()
 {
     PrimaryActorTick.bCanEverTick = true;
@@ -47,29 +45,14 @@ void ASyncTestActor::Tick(float DeltaTime)
             );
         }
     }
-
-    // 테스트를 위한 가상 시간 진행
-    static float SimulatedTime = 0.0f;
-    SimulatedTime += DeltaTime;
 }
 
 // 테스트용 더미 함수
 float ASyncTestActor::GetTimeOffset() const
 {
-    // 실제 플러그인이 로드되어 있는지 확인
-    static FName PluginModuleName = "MultiServerSync";
-    bool bPluginLoaded = FModuleManager::Get().IsModuleLoaded(PluginModuleName);
-
-    if (bPluginLoaded)
-    {
-        // 로드되어 있지만 직접 액세스 못함 - 시뮬레이션된 값 리턴
-        static float SimulatedOffset = 0.005f; // 5ms 초기값
-        SimulatedOffset *= 0.95f; // 매 프레임 감소 (동기화 시뮬레이션)
-        return SimulatedOffset;
-    }
-
-    // 플러그인 없음 - 0 리턴
-    return 0.0f;
+    // 테스트용 가상 값 (시간에 따라 변동)
+    float Time = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+    return 0.005f * FMath::Sin(Time * 0.5f);  // ±5ms 범위의 가상 오프셋
 }
 
 float ASyncTestActor::GetPathDelay() const
@@ -108,25 +91,25 @@ FString ASyncTestActor::GetSyncStatusText() const
 {
     if (IsMasterNode())
     {
-        return TEXT("마스터 노드");
+        return TEXT("Master Node");
     }
 
     float Offset = GetTimeOffset();
     if (FMath::Abs(Offset) < 0.0001f)
     {
-        return TEXT("정밀 동기화됨 (<0.1ms)");
+        return TEXT("Precisely Synced (<0.1ms)");
     }
     else if (FMath::Abs(Offset) < 0.001f)
     {
-        return TEXT("동기화됨 (<1ms)");
+        return TEXT("Synced (<1ms)");
     }
     else if (FMath::Abs(Offset) < 0.01f)
     {
-        return TEXT("동기화 진행 중 (<10ms)");
+        return TEXT("Syncing (<10ms)");
     }
     else
     {
-        return FString::Printf(TEXT("동기화 중... (%.2fms)"), Offset * 1000.0f);
+        return FString::Printf(TEXT("Syncing... (%.2fms)"), Offset * 1000.0f);
     }
 }
 
