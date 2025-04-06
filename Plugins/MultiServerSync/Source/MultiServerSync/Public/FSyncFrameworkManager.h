@@ -3,10 +3,6 @@
 
 #include "CoreMinimal.h"
 #include "ISyncFrameworkManager.h"
-#include "Containers/Ticker.h"
-
-// 전방 선언
-class FSettingsManager;
 
 /**
  * Implementation of the synchronization framework manager
@@ -32,11 +28,7 @@ public:
     virtual TSharedPtr<INetworkManager> GetNetworkManager() const override;
     virtual TSharedPtr<ITimeSync> GetTimeSync() const override;
     virtual TSharedPtr<IFrameSyncController> GetFrameSyncController() const override;
-    virtual TSharedPtr<FSettingsManager> GetSettingsManager() const override;
     // End ISyncFrameworkManager interface
-
-    /** 틱 핸들러 - 주기적인 업데이트에 사용 */
-    bool TickHandler(float DeltaTime);
 
 private:
     /** Environment detector subsystem */
@@ -51,12 +43,6 @@ private:
     /** Frame synchronization controller */
     TSharedPtr<IFrameSyncController> FrameSyncController;
 
-    /** Settings manager */
-    TSharedPtr<FSettingsManager> SettingsManager;
-
     /** Indicates if the manager has been initialized */
     bool bIsInitialized;
-
-    /** 틱 델리게이트 핸들 */
-    FTSTicker::FDelegateHandle TickDelegateHandle;
 };

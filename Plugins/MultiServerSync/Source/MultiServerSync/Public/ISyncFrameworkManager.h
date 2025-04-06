@@ -4,9 +4,6 @@
 #include "CoreMinimal.h"
 #include "ModuleInterfaces.h"
 
-// 전방 선언
-class FSettingsManager;
-
 /**
  * Interface for the synchronization framework manager
  * Provides access to all subsystems of the Multi-Server Sync Framework
@@ -27,7 +24,4 @@ public:
 
     /** Get the frame synchronization controller */
     virtual TSharedPtr<IFrameSyncController> GetFrameSyncController() const = 0;
-
-    /** Get the settings manager */
-    virtual TSharedPtr<FSettingsManager> GetSettingsManager() const = 0;
 };
