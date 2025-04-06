@@ -427,6 +427,7 @@ FGuid FNetworkManager::GetProjectId() const
     return ProjectId;
 }
 
+// ProcessReceivedData 함수에 설정 메시지 처리 추가
 void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4Endpoint& Sender)
 {
     // 메시지 파싱
@@ -459,7 +460,7 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
     case ENetworkMessageType::Data:
         HandleDataMessage(Message, Sender);
         break;
-        // 추가: 마스터-슬레이브 프로토콜 메시지 처리
+        // 마스터-슬레이브 프로토콜 메시지 처리
     case ENetworkMessageType::MasterAnnouncement:
         HandleMasterAnnouncement(Message, Sender);
         break;
@@ -481,12 +482,158 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
     case ENetworkMessageType::RoleChange:
         HandleRoleChange(Message, Sender);
         break;
+        // 설정 관련 메시지 처리 - 새로 추가
+    case ENetworkMessageType::SettingsSync:
+        HandleSettingsSyncMessage(Message, Sender);
+        break;
+    case ENetworkMessageType::SettingsRequest:
+        HandleSettingsRequestMessage(Message, Sender);
+        break;
+    case ENetworkMessageType::SettingsResponse:
+        HandleSettingsResponseMessage(Message, Sender);
+        break;
     case ENetworkMessageType::Custom:
         HandleCustomMessage(Message, Sender);
         break;
     default:
         UE_LOG(LogMultiServerSync, Warning, TEXT("Unknown message type received: %d"), (int)Message.GetType());
         break;
+    }
+}
+
+// SendSettingsMessage 구현
+bool FNetworkManager::SendSettingsMessage(const TArray<uint8>& SettingsData)
+{
+    if (!bIsInitialized)
+    {
+        return false;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Sending settings sync message (%d bytes)"), SettingsData.Num());
+
+    // 설정 데이터를 포함한 메시지 생성
+    FNetworkMessage Message(ENetworkMessageType::SettingsSync, SettingsData);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    // 모든 서버에 브로드캐스트
+    return BroadcastMessageToServers(Message);
+}
+
+// RequestSettings 구현
+bool FNetworkManager::RequestSettings()
+{
+    if (!bIsInitialized)
+    {
+        return false;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Requesting settings from other servers"));
+
+    // 요청 메시지 생성 (데이터 없음)
+    FNetworkMessage Message(ENetworkMessageType::SettingsRequest, TArray<uint8>());
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    // 모든 서버에 브로드캐스트
+    return BroadcastMessageToServers(Message);
+}
+
+// 설정 동기화 메시지 처리 구현
+void FNetworkManager::HandleSettingsSyncMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    // 발신자 식별
+    FString SenderId;
+    for (const auto& Pair : DiscoveredServers)
+    {
+        if (Pair.Value.IPAddress == Sender.Address && Pair.Value.Port == Sender.Port)
+        {
+            SenderId = Pair.Key;
+            break;
+        }
+    }
+
+    if (SenderId.IsEmpty())
+    {
+        SenderId = Sender.ToString();
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Received settings sync message from %s (%d bytes)"),
+        *SenderId, Message.GetData().Num());
+
+    // 설정 데이터 전달
+    if (MessageHandler)
+    {
+        MessageHandler(SenderId, Message.GetData());
+    }
+}
+
+// 설정 요청 메시지 처리 구현
+void FNetworkManager::HandleSettingsRequestMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Received settings request from %s"), *Sender.ToString());
+
+    // 마스터 노드일 때만 응답
+    if (bIsMaster)
+    {
+        UE_LOG(LogMultiServerSync, Display, TEXT("As master, responding to settings request"));
+
+        // 메시지 핸들러를 통해 알림
+        if (MessageHandler)
+        {
+            // 특수 메시지로 설정 요청을 알림
+            TArray<uint8> RequestNotification;
+            RequestNotification.Add(static_cast<uint8>(ENetworkMessageType::SettingsRequest));
+            MessageHandler(Sender.ToString(), RequestNotification);
+        }
+    }
+    else
+    {
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Ignoring settings request as non-master node"));
+    }
+}
+
+// 설정 응답 메시지 처리 구현
+void FNetworkManager::HandleSettingsResponseMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    // 발신자 식별
+    FString SenderId;
+    for (const auto& Pair : DiscoveredServers)
+    {
+        if (Pair.Value.IPAddress == Sender.Address && Pair.Value.Port == Sender.Port)
+        {
+            SenderId = Pair.Key;
+            break;
+        }
+    }
+
+    if (SenderId.IsEmpty())
+    {
+        SenderId = Sender.ToString();
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Received settings response from %s (%d bytes)"),
+        *SenderId, Message.GetData().Num());
+
+    // 설정 데이터 전달
+    if (MessageHandler)
+    {
+        MessageHandler(SenderId, Message.GetData());
     }
 }
 

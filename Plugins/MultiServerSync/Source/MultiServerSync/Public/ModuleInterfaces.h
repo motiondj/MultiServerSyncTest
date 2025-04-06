@@ -61,6 +61,11 @@ public:
     virtual struct FMasterInfo GetMasterInfo() const = 0;
     virtual void SetMasterPriority(float Priority) = 0;
     virtual void RegisterMasterChangeHandler(TFunction<void(const FString&, bool)> Handler) = 0;
+
+    // 설정 관리 관련 메서드 - 새로 추가
+    virtual uint16 GetPort() const = 0;
+    virtual bool SendSettingsMessage(const TArray<uint8>& SettingsData) = 0;
+    virtual bool RequestSettings() = 0;
 };
 
 /**

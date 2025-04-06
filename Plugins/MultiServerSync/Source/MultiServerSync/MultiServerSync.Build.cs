@@ -27,7 +27,9 @@ public class MultiServerSync : ModuleRules
                 "CoreUObject",
                 "Engine",
                 "Sockets",
-                "Networking"
+                "Networking",
+                "Json", // JSON 모듈 의존성 추가
+                "JsonUtilities" // JSON 유틸리티 모듈 의존성 추가
 				// ... add other public dependencies that you statically link with here ...
 			}
         );

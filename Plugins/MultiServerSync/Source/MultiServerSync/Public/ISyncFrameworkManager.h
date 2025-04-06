@@ -24,4 +24,7 @@ public:
 
     /** Get the frame synchronization controller */
     virtual TSharedPtr<IFrameSyncController> GetFrameSyncController() const = 0;
+
+    /** Get the settings manager - 새로 추가*/
+    virtual TSharedPtr<class FSettingsManager> GetSettingsManager() const = 0;
 };

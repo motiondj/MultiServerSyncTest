@@ -21,7 +21,7 @@ enum class ENetworkMessageType : uint8
     Command = 4,      // 일반 명령 메시지
     Data = 5,         // 데이터 전송 메시지
 
-    // 추가: 마스터-슬레이브 프로토콜 관련 메시지
+    // 마스터-슬레이브 프로토콜 관련 메시지
     MasterAnnouncement = 10,  // 마스터가 자신의 상태를 알림
     MasterQuery = 11,         // 마스터 정보 요청
     MasterResponse = 12,      // 마스터 정보 응답
@@ -29,6 +29,11 @@ enum class ENetworkMessageType : uint8
     MasterVote = 14,          // 마스터 선출 투표
     MasterResign = 15,        // 마스터 사임 알림
     RoleChange = 16,          // 역할 변경 알림
+
+    // 설정 공유 관련 메시지 - 새로 추가
+    SettingsSync = 20,        // 설정 동기화 메시지
+    SettingsRequest = 21,     // 설정 요청 메시지
+    SettingsResponse = 22,    // 설정 응답 메시지
 
     Custom = 255      // 사용자 정의 메시지
 };
@@ -252,6 +257,11 @@ public:
     virtual FMasterInfo GetMasterInfo() const override;
     virtual void SetMasterPriority(float Priority) override;
     virtual void RegisterMasterChangeHandler(TFunction<void(const FString&, bool)> Handler) override;
+
+    // 설정 관련 메서드 (새로 추가)
+    virtual uint16 GetPort() const override { return Port; }
+    virtual bool SendSettingsMessage(const TArray<uint8>& SettingsData) override;
+    virtual bool RequestSettings() override;
     // End INetworkManager interface
 
     /** Get the list of discovered servers */
@@ -292,6 +302,9 @@ public:
 
     /** 시간 동기화 메시지 전송 */
     bool SendTimeSyncMessage(const TArray<uint8>& PTPMessage);
+
+    /** 시퀀스 번호 접근자 (FSyncFrameworkManager에서 사용) */
+    uint16 GetNextSequenceId() { return GetNextSequenceNumber(); }
 
 private:
     /** Broadcast socket for server discovery */
@@ -378,6 +391,11 @@ private:
     void HandleMasterVote(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
     void HandleMasterResign(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
     void HandleRoleChange(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+
+    // 설정 관련 메시지 처리 메서드 (새로 추가)
+    void HandleSettingsSyncMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleSettingsRequestMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleSettingsResponseMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
 
     // 마스터 선출 관련 메서드
     void SendElectionVote(const FString& CandidateId);
