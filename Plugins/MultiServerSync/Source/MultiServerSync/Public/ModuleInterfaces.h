@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Interface.h"
+#include "NetworkTypes.h" // FNetworkLatencyStats 정의가 포함된 헤더
 
 /**
  * Common interface for all environment detection systems
@@ -66,6 +67,13 @@ public:
     virtual uint16 GetPort() const = 0;
     virtual bool SendSettingsMessage(const TArray<uint8>& SettingsData) = 0;
     virtual bool RequestSettings() = 0;
+
+    // 네트워크 지연 측정 관련 메서드
+    virtual void StartLatencyMeasurement(const FIPv4Endpoint & ServerEndpoint, float IntervalSeconds = 1.0f, int32 SampleCount = 0) = 0;
+    virtual void StopLatencyMeasurement(const FIPv4Endpoint& ServerEndpoint) = 0;
+    virtual FNetworkLatencyStats GetLatencyStats(const FIPv4Endpoint& ServerEndpoint) const = 0;
+    virtual int32 EvaluateNetworkQuality(const FIPv4Endpoint& ServerEndpoint) const = 0;
+    virtual FString GetNetworkQualityString(const FIPv4Endpoint& ServerEndpoint) const = 0;
 };
 
 /**

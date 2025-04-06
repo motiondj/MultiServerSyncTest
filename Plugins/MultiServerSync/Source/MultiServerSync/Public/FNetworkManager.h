@@ -10,6 +10,7 @@
 #include "HAL/Runnable.h"
 #include "Interfaces/IPv4/IPv4Address.h"
 #include "Interfaces/IPv4/IPv4Endpoint.h"
+#include "Containers/Ticker.h"
 
 // 메시지 유형 정의
 enum class ENetworkMessageType : uint8
@@ -30,12 +31,23 @@ enum class ENetworkMessageType : uint8
     MasterResign = 15,        // 마스터 사임 알림
     RoleChange = 16,          // 역할 변경 알림
 
-    // 설정 공유 관련 메시지 - 새로 추가
+    // 설정 공유 관련 메시지
     SettingsSync = 20,        // 설정 동기화 메시지
     SettingsRequest = 21,     // 설정 요청 메시지
     SettingsResponse = 22,    // 설정 응답 메시지
 
+    // 핑 관련 메시지
+    PingRequest = 30,         // 핑 요청 메시지
+    PingResponse = 31,        // 핑 응답 메시지
+
     Custom = 255      // 사용자 정의 메시지
+};
+
+// 핑 메시지 유형 열거형
+enum class EPingMessageType : uint8
+{
+    Request = 0,  // 핑 요청
+    Response = 1  // 핑 응답
 };
 
 // 메시지 헤더 구조체
@@ -51,6 +63,54 @@ struct FNetworkMessageHeader
     uint8 Flags;               // 플래그
 };
 #pragma pack(pop)
+
+// 네트워크 지연 통계 구조체
+struct FNetworkLatencyStats
+{
+    double MinRTT;            // 최소 RTT (ms)
+    double MaxRTT;            // 최대 RTT (ms)
+    double AvgRTT;            // 평균 RTT (ms)
+    double CurrentRTT;        // 현재 RTT (ms)
+    double StandardDeviation; // 표준 편차 (ms)
+    double Jitter;            // 지터 (ms)
+    int32 SampleCount;        // 샘플 수
+    int32 LostPackets;        // 손실된 패킷 수
+    TArray<double> RecentRTTs;// 최근 RTT 기록 (통계 계산용)
+    double LastUpdateTime;    // 마지막 업데이트 시간
+
+    // 기본 생성자
+    FNetworkLatencyStats()
+        : MinRTT(FLT_MAX)
+        , MaxRTT(0.0)
+        , AvgRTT(0.0)
+        , CurrentRTT(0.0)
+        , StandardDeviation(0.0)
+        , Jitter(0.0)
+        , SampleCount(0)
+        , LostPackets(0)
+        , LastUpdateTime(0.0)
+    {
+        // 최근 RTT 기록을 위한 공간 예약
+        RecentRTTs.Reserve(100);
+    }
+
+    // 최근 RTT 샘플 추가 및 통계 업데이트
+    void AddRTTSample(double RTT);
+};
+
+// 핑 메시지 구조체
+struct FPingMessage
+{
+    EPingMessageType Type;      // 메시지 타입
+    uint64 Timestamp;           // 발신 타임스탬프
+    uint32 SequenceNumber;      // 시퀀스 번호
+
+    // 직렬화 함수
+    void Serialize(FMemoryWriter& Writer) const;
+
+    // 역직렬화 함수
+    void Deserialize(FMemoryReader& Reader);
+};
 
 /**
  * 네트워크 메시지 클래스
@@ -258,10 +318,17 @@ public:
     virtual void SetMasterPriority(float Priority) override;
     virtual void RegisterMasterChangeHandler(TFunction<void(const FString&, bool)> Handler) override;
 
-    // 설정 관련 메서드 (새로 추가)
+    // 설정 관련 메서드
     virtual uint16 GetPort() const override { return Port; }
     virtual bool SendSettingsMessage(const TArray<uint8>& SettingsData) override;
     virtual bool RequestSettings() override;
+
+    // 네트워크 지연 측정 관련 메서드
+    virtual void StartLatencyMeasurement(const FIPv4Endpoint& ServerEndpoint, float IntervalSeconds = 1.0f, int32 SampleCount = 0) override;
+    virtual void StopLatencyMeasurement(const FIPv4Endpoint& ServerEndpoint) override;
+    virtual FNetworkLatencyStats GetLatencyStats(const FIPv4Endpoint& ServerEndpoint) const override;
+    virtual int32 EvaluateNetworkQuality(const FIPv4Endpoint& ServerEndpoint) const override;
+    virtual FString GetNetworkQualityString(const FIPv4Endpoint& ServerEndpoint) const override;
     // End INetworkManager interface
 
     /** Get the list of discovered servers */
@@ -305,6 +372,33 @@ public:
 
     /** 시퀀스 번호 접근자 (FSyncFrameworkManager에서 사용) */
     uint16 GetNextSequenceId() { return GetNextSequenceNumber(); }
+
+    /**
+     * 특정 서버에 핑 요청을 보냅니다.
+     * @param ServerEndpoint 핑을 보낼 서버의 엔드포인트
+     * @return 요청에 사용된 시퀀스 번호
+     */
+    uint32 SendPingRequest(const FIPv4Endpoint& ServerEndpoint);
+
+    /**
+     * 핑 요청에 대한 응답을 보냅니다.
+     * @param RequestMessage 수신한 핑 요청 메시지
+     * @param SourceEndpoint 요청을 보낸 엔드포인트
+     */
+    void SendPingResponse(const FPingMessage& RequestMessage, const FIPv4Endpoint& SourceEndpoint);
+
+    /**
+     * 지연 시간 측정을 위한 주기적인 핑 요청을 활성화합니다.
+     * @param ServerEndpoint 핑을 보낼 서버 엔드포인트
+     * @param IntervalSeconds 핑 요청 간격 (초)
+     */
+    void EnablePeriodicPing(const FIPv4Endpoint& ServerEndpoint, float IntervalSeconds = 1.0f);
+
+    /**
+     * 주기적인 핑 요청을 비활성화합니다.
+     * @param ServerEndpoint 비활성화할 서버 엔드포인트
+     */
+    void DisablePeriodicPing(const FIPv4Endpoint& ServerEndpoint);
 
 private:
     /** Broadcast socket for server discovery */
@@ -356,6 +450,27 @@ private:
     const float MASTER_TIMEOUT_SECONDS = 5.0f;    // 마스터 타임아웃 시간
     const float ELECTION_TIMEOUT_SECONDS = 3.0f;  // 선출 타임아웃 시간
 
+    // 네트워크 지연 측정 관련 멤버 변수
+    TMap<FString, FNetworkLatencyStats> ServerLatencyStats;    // 서버별 지연 통계
+    uint32 NextPingSequenceNumber;                            // 다음 핑 시퀀스 번호
+    TMap<uint32, TPair<FIPv4Endpoint, double>> PendingPingRequests;  // 대기 중인 핑 요청
+    FTSTicker::FDelegateHandle LatencyMeasurementTickHandle;  // 지연 측정 틱 핸들
+    FTSTicker::FDelegateHandle PingTimeoutCheckHandle;        // 핑 타임아웃 체크 핸들
+    const int32 MAX_RTT_SAMPLES = 100;                        // 최대 RTT 샘플 수
+    const double PING_TIMEOUT_SECONDS = 2.0;                  // 핑 타임아웃 시간 (초)
+
+    // 주기적 핑 요청 관리를 위한 구조체
+    struct FPeriodicPingState
+    {
+        FIPv4Endpoint ServerEndpoint;     // 서버 엔드포인트
+        float IntervalSeconds;           // 핑 간격 (초)
+        float TimeRemainingSeconds;      // 다음 핑까지 남은 시간
+        bool bIsActive;                  // 활성 상태 여부
+    };
+
+    // 주기적 핑 상태 관리
+    TArray<FPeriodicPingState> PeriodicPingStates;
+
     /** 소켓 초기화 */
     bool InitializeSockets();
 
@@ -392,10 +507,14 @@ private:
     void HandleMasterResign(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
     void HandleRoleChange(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
 
-    // 설정 관련 메시지 처리 메서드 (새로 추가)
+    // 설정 관련 메시지 처리 메서드
     void HandleSettingsSyncMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
     void HandleSettingsRequestMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
     void HandleSettingsResponseMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+
+    // 핑 메시지 처리 메서드
+    void HandlePingRequest(const FArrayReaderPtr& ArrayReaderPtr, const FIPv4Endpoint& SourceEndpoint);
+    void HandlePingResponse(const FArrayReaderPtr& ArrayReaderPtr, const FIPv4Endpoint& SourceEndpoint);
 
     // 마스터 선출 관련 메서드
     void SendElectionVote(const FString& CandidateId);
@@ -405,6 +524,11 @@ private:
     float CalculateVotePriority();
     void UpdateMasterStatus(const FString& NewMasterId, bool bLocalServerIsMaster);
     void SendRoleChangeNotification();
+
+    // 네트워크 지연 측정 관련 메서드
+    void UpdateRTTStatistics(const FIPv4Endpoint& ServerEndpoint, double RTT);
+    void CheckPingTimeouts();
+    bool TickLatencyMeasurement(float DeltaTime);
 
     /** 다음 시퀀스 번호 생성 */
     uint16 GetNextSequenceNumber();

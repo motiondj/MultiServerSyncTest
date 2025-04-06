@@ -307,6 +307,28 @@ bool FNetworkManager::Initialize()
     FTickerDelegate TickDelegate = FTickerDelegate::CreateRaw(this, &FNetworkManager::MasterSlaveProtocolTick);
     MasterSlaveTickHandle = FTSTicker::GetCoreTicker().AddTicker(TickDelegate, 1.0f); // 1초마다 호출
 
+    // 네트워크 지연 통계 초기화
+    ServerLatencyStats.Empty();
+
+    // 핑 시퀀스 번호 초기화
+    NextPingSequenceNumber = 0;
+
+    // 주기적 핑 상태 초기화
+    PeriodicPingStates.Empty();
+
+    // 틱 델리게이트가 있으면 제거
+    if (LatencyMeasurementTickHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(LatencyMeasurementTickHandle);
+        LatencyMeasurementTickHandle.Reset();
+    }
+
+    if (PingTimeoutCheckHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(PingTimeoutCheckHandle);
+        PingTimeoutCheckHandle.Reset();
+    }
+
     return true;
 }
 
@@ -351,6 +373,28 @@ void FNetworkManager::Shutdown()
 
     bIsInitialized = false;
     UE_LOG(LogMultiServerSync, Display, TEXT("Network Manager shutdown completed"));
+
+    // 모든 주기적 핑 비활성화
+    PeriodicPingStates.Empty();
+
+    // 대기 중인 핑 요청 정리
+    PendingPingRequests.Empty();
+
+    // 네트워크 지연 통계 정리
+    ServerLatencyStats.Empty();
+
+    // 틱 델리게이트 제거
+    if (LatencyMeasurementTickHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(LatencyMeasurementTickHandle);
+        LatencyMeasurementTickHandle.Reset();
+    }
+
+    if (PingTimeoutCheckHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(PingTimeoutCheckHandle);
+        PingTimeoutCheckHandle.Reset();
+    }
 }
 
 bool FNetworkManager::SendMessage(const FString& EndpointId, const TArray<uint8>& Message)
@@ -439,65 +483,122 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
         return;
     }
 
-    // 메시지 유형에 따라 처리
-    switch (Message.GetType())
+    // 메시지 역직렬화
+    FNetworkMessage Message;
+    if (Message.Deserialize(Data))
     {
-    case ENetworkMessageType::Discovery:
-        HandleDiscoveryMessage(Message, Sender);
-        break;
-    case ENetworkMessageType::DiscoveryResponse:
-        HandleDiscoveryResponseMessage(Message, Sender);
-        break;
-    case ENetworkMessageType::TimeSync:
-        HandleTimeSyncMessage(Message, Sender);
-        break;
-    case ENetworkMessageType::FrameSync:
-        HandleFrameSyncMessage(Message, Sender);
-        break;
-    case ENetworkMessageType::Command:
-        HandleCommandMessage(Message, Sender);
-        break;
-    case ENetworkMessageType::Data:
-        HandleDataMessage(Message, Sender);
-        break;
-        // 마스터-슬레이브 프로토콜 메시지 처리
-    case ENetworkMessageType::MasterAnnouncement:
-        HandleMasterAnnouncement(Message, Sender);
-        break;
-    case ENetworkMessageType::MasterQuery:
-        HandleMasterQuery(Message, Sender);
-        break;
-    case ENetworkMessageType::MasterResponse:
-        HandleMasterResponse(Message, Sender);
-        break;
-    case ENetworkMessageType::MasterElection:
-        HandleMasterElection(Message, Sender);
-        break;
-    case ENetworkMessageType::MasterVote:
-        HandleMasterVote(Message, Sender);
-        break;
-    case ENetworkMessageType::MasterResign:
-        HandleMasterResign(Message, Sender);
-        break;
-    case ENetworkMessageType::RoleChange:
-        HandleRoleChange(Message, Sender);
-        break;
-        // 설정 관련 메시지 처리 - 새로 추가
-    case ENetworkMessageType::SettingsSync:
-        HandleSettingsSyncMessage(Message, Sender);
-        break;
-    case ENetworkMessageType::SettingsRequest:
-        HandleSettingsRequestMessage(Message, Sender);
-        break;
-    case ENetworkMessageType::SettingsResponse:
-        HandleSettingsResponseMessage(Message, Sender);
-        break;
-    case ENetworkMessageType::Custom:
-        HandleCustomMessage(Message, Sender);
-        break;
-    default:
-        UE_LOG(LogMultiServerSync, Warning, TEXT("Unknown message type received: %d"), (int)Message.GetType());
-        break;
+        // 메시지 유형에 따라 처리
+        switch (Message.GetType())
+        {
+        case ENetworkMessageType::Discovery:
+            HandleDiscoveryMessage(Message, Sender);
+            break;
+        case ENetworkMessageType::DiscoveryResponse:
+            HandleDiscoveryResponseMessage(Message, Sender);
+            break;
+        case ENetworkMessageType::TimeSync:
+            HandleTimeSyncMessage(Message, Sender);
+            break;
+        case ENetworkMessageType::FrameSync:
+            HandleFrameSyncMessage(Message, Sender);
+            break;
+        case ENetworkMessageType::Command:
+            HandleCommandMessage(Message, Sender);
+            break;
+        case ENetworkMessageType::Data:
+            HandleDataMessage(Message, Sender);
+            break;
+            // 마스터-슬레이브 프로토콜 메시지 처리
+        case ENetworkMessageType::MasterAnnouncement:
+            HandleMasterAnnouncement(Message, Sender);
+            break;
+        case ENetworkMessageType::MasterQuery:
+            HandleMasterQuery(Message, Sender);
+            break;
+        case ENetworkMessageType::MasterResponse:
+            HandleMasterResponse(Message, Sender);
+            break;
+        case ENetworkMessageType::MasterElection:
+            HandleMasterElection(Message, Sender);
+            break;
+        case ENetworkMessageType::MasterVote:
+            HandleMasterVote(Message, Sender);
+            break;
+        case ENetworkMessageType::MasterResign:
+            HandleMasterResign(Message, Sender);
+            break;
+        case ENetworkMessageType::RoleChange:
+            HandleRoleChange(Message, Sender);
+            break;
+            // 설정 관련 메시지 처리 - 새로 추가
+        case ENetworkMessageType::SettingsSync:
+            HandleSettingsSyncMessage(Message, Sender);
+            break;
+        case ENetworkMessageType::SettingsRequest:
+            HandleSettingsRequestMessage(Message, Sender);
+            break;
+        case ENetworkMessageType::SettingsResponse:
+            HandleSettingsResponseMessage(Message, Sender);
+            break;
+        case ENetworkMessageType::Custom:
+            HandleCustomMessage(Message, Sender);
+            break;
+        case ENetworkMessageType::PingRequest:
+            HandlePingRequest(MakeShareable(new FMemoryReader(Message.GetData())), Sender);
+            break;
+        case ENetworkMessageType::PingResponse:
+            HandlePingResponse(MakeShareable(new FMemoryReader(Message.GetData())), Sender);
+            break;
+        default:
+            UE_LOG(LogMultiServerSync, Warning, TEXT("Unknown message type received: %d"), (int)Message.GetType());
+            break;
+        }
+    }
+}
+
+// 핑 타임아웃 검사 함수
+void FNetworkManager::CheckPingTimeouts()
+{
+    // 현재 시간
+    double CurrentTime = FPlatformTime::Seconds();
+
+    // 타임아웃된 요청 목록
+    TArray<uint32> TimeoutRequests;
+
+    // 모든 대기 중인 요청 검사
+    for (auto& Pair : PendingPingRequests)
+    {
+        uint32 SequenceNumber = Pair.Key;
+        TPair<FIPv4Endpoint, double>& RequestInfo = Pair.Value;
+
+        double RequestTime = RequestInfo.Value;
+        double ElapsedTime = CurrentTime - RequestTime;
+
+        // 타임아웃 확인
+        if (ElapsedTime > PING_TIMEOUT_SECONDS)
+        {
+            TimeoutRequests.Add(SequenceNumber);
+
+            // 서버 엔드포인트 가져오기
+            FIPv4Endpoint ServerEndpoint = RequestInfo.Key;
+            FString ServerID = ServerEndpoint.ToString();
+
+            // 타임아웃 로그
+            UE_LOG(LogMultiServerSync, Warning, TEXT("Ping request timed out (Seq: %u, Server: %s, Elapsed: %.2f s)"),
+                SequenceNumber, *ServerID, ElapsedTime);
+
+            // 패킷 손실 통계 업데이트
+            if (ServerLatencyStats.Contains(ServerID))
+            {
+                ServerLatencyStats[ServerID].LostPackets++;
+            }
+        }
+    }
+
+    // 타임아웃된 요청 제거
+    for (uint32 SequenceNumber : TimeoutRequests)
+    {
+        PendingPingRequests.Remove(SequenceNumber);
     }
 }
 
@@ -1914,4 +2015,523 @@ bool FNetworkManager::MasterSlaveProtocolTick(float DeltaTime)
 {
     TickMasterSlaveProtocol();
     return true; // 계속 틱 유지
+}
+
+void FPingMessage::Serialize(FMemoryWriter& Writer) const
+{
+    // 메시지 타입 직렬화
+    uint8 TypeValue = static_cast<uint8>(Type);
+    Writer << TypeValue;
+
+    // 타임스탬프 직렬화 - 임시 변수를 사용하여 수정
+    uint64 TempTimestamp = Timestamp;
+    Writer << TempTimestamp;
+
+    // 시퀀스 번호 직렬화 - 임시 변수를 사용하여 수정
+    uint32 TempSequenceNumber = SequenceNumber;
+    Writer << TempSequenceNumber;
+}
+
+void FPingMessage::Deserialize(FMemoryReader& Reader)
+{
+    // 메시지 타입 역직렬화
+    uint8 TypeValue;
+    Reader << TypeValue;
+    Type = static_cast<EPingMessageType>(TypeValue);
+
+    // 타임스탬프 역직렬화
+    Reader << Timestamp;
+
+    // 시퀀스 번호 역직렬화
+    Reader << SequenceNumber;
+}
+
+void FNetworkLatencyStats::AddRTTSample(double RTT)
+{
+    // 새 샘플 추가
+    RecentRTTs.Add(RTT);
+    CurrentRTT = RTT;
+
+    // 최대 샘플 수 제한
+    while (RecentRTTs.Num() > 100)
+    {
+        RecentRTTs.RemoveAt(0);
+    }
+
+    // 최소/최대 RTT 업데이트
+    MinRTT = FMath::Min(MinRTT, RTT);
+    MaxRTT = FMath::Max(MaxRTT, RTT);
+
+    // 평균 계산
+    double Sum = 0.0;
+    for (double Sample : RecentRTTs)
+    {
+        Sum += Sample;
+    }
+
+    AvgRTT = Sum / RecentRTTs.Num();
+
+    // 표준 편차 계산
+    double VarianceSum = 0.0;
+    for (double Sample : RecentRTTs)
+    {
+        double Diff = Sample - AvgRTT;
+        VarianceSum += (Diff * Diff);
+    }
+
+    StandardDeviation = FMath::Sqrt(VarianceSum / RecentRTTs.Num());
+
+    // 지터 계산 (연속된 샘플 간의 변화량의 평균)
+    if (RecentRTTs.Num() > 1)
+    {
+        double JitterSum = 0.0;
+        for (int32 i = 1; i < RecentRTTs.Num(); ++i)
+        {
+            JitterSum += FMath::Abs(RecentRTTs[i] - RecentRTTs[i - 1]);
+        }
+
+        Jitter = JitterSum / (RecentRTTs.Num() - 1);
+    }
+
+    // 샘플 수 업데이트
+    SampleCount++;
+
+    // 마지막 업데이트 시간 기록
+    LastUpdateTime = FPlatformTime::Seconds();
+}
+
+// 핑 요청 전송 함수 구현
+uint32 FNetworkManager::SendPingRequest(const FIPv4Endpoint& ServerEndpoint)
+{
+    // 시퀀스 번호 생성
+    uint32 SequenceNumber = NextPingSequenceNumber++;
+
+    // 타임스탬프 생성 (마이크로초 단위)
+    uint64 CurrentTimestamp = FDateTime::UtcNow().GetTicks();
+
+    // 핑 요청 메시지 생성
+    FPingMessage PingRequest;
+    PingRequest.Type = EPingMessageType::Request;
+    PingRequest.Timestamp = CurrentTimestamp;
+    PingRequest.SequenceNumber = SequenceNumber;
+
+    // 메시지 직렬화
+    TArray<uint8> MessageData;
+    FMemoryWriter Writer(MessageData);
+
+    // 핑 메시지 직렬화
+    PingRequest.Serialize(Writer);
+
+    // 네트워크 메시지 생성
+    FNetworkMessage NetworkMessage(ENetworkMessageType::PingRequest, MessageData);
+
+    // 메시지 전송
+    SendMessageToEndpoint(ServerEndpoint, NetworkMessage);
+
+    // 요청 기록 (시간은 초 단위로)
+    double CurrentTimeSeconds = FPlatformTime::Seconds();
+    PendingPingRequests.Add(SequenceNumber, TPair<FIPv4Endpoint, double>(ServerEndpoint, CurrentTimeSeconds));
+
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent ping request to %s (Seq: %u)"),
+        *ServerEndpoint.ToString(), SequenceNumber);
+
+    return SequenceNumber;
+}
+
+void FNetworkManager::SendPingResponse(const FPingMessage& RequestMessage, const FIPv4Endpoint& SourceEndpoint)
+{
+    // 핑 응답 메시지 생성
+    FPingMessage PingResponse;
+    PingResponse.Type = EPingMessageType::Response;
+    PingResponse.Timestamp = RequestMessage.Timestamp; // 원본 타임스탬프 유지
+    PingResponse.SequenceNumber = RequestMessage.SequenceNumber; // 원본 시퀀스 번호 유지
+
+    // 메시지 직렬화
+    TArray<uint8> MessageData;
+    FMemoryWriter Writer(MessageData);
+
+    // 핑 메시지 직렬화
+    PingResponse.Serialize(Writer);
+
+    // 네트워크 메시지 생성
+    FNetworkMessage NetworkMessage(ENetworkMessageType::PingResponse, MessageData);
+
+    // 메시지 전송
+    SendMessageToEndpoint(SourceEndpoint, NetworkMessage);
+
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent ping response to %s (Seq: %u)"),
+        *SourceEndpoint.ToString(), RequestMessage.SequenceNumber);
+}
+
+// 핑 요청 처리 함수
+void FNetworkManager::HandlePingRequest(const FArrayReaderPtr& ArrayReaderPtr, const FIPv4Endpoint& SourceEndpoint)
+{
+    // 요청 메시지 파싱
+    FPingMessage RequestMessage;
+    FMemoryReader Reader(*ArrayReaderPtr);
+    RequestMessage.Deserialize(Reader);
+
+    // 응답 전송
+    SendPingResponse(RequestMessage, SourceEndpoint);
+}
+
+// 핑 응답 처리 함수
+void FNetworkManager::HandlePingResponse(const FArrayReaderPtr& ArrayReaderPtr, const FIPv4Endpoint& SourceEndpoint)
+{
+    // 현재 시간 (초)
+    double CurrentTime = FPlatformTime::Seconds();
+
+    // 응답 메시지 파싱
+    FPingMessage ResponseMessage;
+    FMemoryReader Reader(*ArrayReaderPtr);
+    ResponseMessage.Deserialize(Reader);
+
+    // 요청 시간 찾기
+    uint32 SequenceNumber = ResponseMessage.SequenceNumber;
+    if (PendingPingRequests.Contains(SequenceNumber))
+    {
+        // 요청 정보 얻기
+        TPair<FIPv4Endpoint, double> RequestInfo = PendingPingRequests[SequenceNumber];
+        double RequestTime = RequestInfo.Value;
+
+        // RTT 계산 (밀리초 단위)
+        double RTT = (CurrentTime - RequestTime) * 1000.0;
+
+        // 통계 업데이트
+        UpdateRTTStatistics(SourceEndpoint, RTT);
+
+        // 요청 목록에서 제거
+        PendingPingRequests.Remove(SequenceNumber);
+
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Received ping response from %s (Seq: %u, RTT: %.2f ms)"),
+            *SourceEndpoint.ToString(), SequenceNumber, RTT);
+    }
+    else
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Received ping response with unknown sequence number %u from %s"),
+            SequenceNumber, *SourceEndpoint.ToString());
+    }
+}
+
+// RTT 통계 업데이트
+void FNetworkManager::UpdateRTTStatistics(const FIPv4Endpoint& ServerEndpoint, double RTT)
+{
+    // 서버 ID 가져오기
+    FString ServerID = ServerEndpoint.ToString();
+
+    // 해당 서버의 통계 가져오기 또는 생성
+    if (!ServerLatencyStats.Contains(ServerID))
+    {
+        ServerLatencyStats.Add(ServerID, FNetworkLatencyStats());
+    }
+
+    // 통계 업데이트
+    FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+    Stats.AddRTTSample(RTT);
+}
+
+// 주기적 핑 활성화 함수 구현
+void FNetworkManager::EnablePeriodicPing(const FIPv4Endpoint& ServerEndpoint, float IntervalSeconds)
+{
+    // 이미 존재하는 주기적 핑 상태 확인
+    for (FPeriodicPingState& PingState : PeriodicPingStates)
+    {
+        if (PingState.ServerEndpoint == ServerEndpoint)
+        {
+            // 이미 존재하는 핑 상태 업데이트
+            PingState.IntervalSeconds = IntervalSeconds;
+            PingState.TimeRemainingSeconds = 0.0f; // 즉시 핑 전송
+            PingState.bIsActive = true;
+
+            UE_LOG(LogMultiServerSync, Verbose, TEXT("Updated periodic ping to %s (Interval: %.2f seconds)"),
+                *ServerEndpoint.ToString(), IntervalSeconds);
+            return;
+        }
+    }
+
+    // 새로운 주기적 핑 상태 추가
+    FPeriodicPingState NewPingState;
+    NewPingState.ServerEndpoint = ServerEndpoint;
+    NewPingState.IntervalSeconds = IntervalSeconds;
+    NewPingState.TimeRemainingSeconds = 0.0f; // 즉시 핑 전송
+    NewPingState.bIsActive = true;
+
+    PeriodicPingStates.Add(NewPingState);
+
+    // 틱 함수가 등록되어 있지 않으면 등록
+    if (!LatencyMeasurementTickHandle.IsValid())
+    {
+        LatencyMeasurementTickHandle = FTSTicker::GetCoreTicker().AddTicker(
+            FTickerDelegate::CreateRaw(this, &FNetworkManager::TickLatencyMeasurement),
+            IntervalSeconds);
+    }
+
+    // 타임아웃 체크 함수가 등록되어 있지 않으면 등록
+    if (!PingTimeoutCheckHandle.IsValid())
+    {
+        PingTimeoutCheckHandle = FTSTicker::GetCoreTicker().AddTicker(
+            FTickerDelegate::CreateLambda([this](float DeltaTime)
+                {
+                    CheckPingTimeouts();
+                    return true;
+                }),
+            1.0f); // 1초마다 타임아웃 체크
+    }
+
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Enabled periodic ping to %s (Interval: %.2f seconds)"),
+        *ServerEndpoint.ToString(), IntervalSeconds);
+}
+
+// 주기적 핑 비활성화 함수 구현
+void FNetworkManager::DisablePeriodicPing(const FIPv4Endpoint& ServerEndpoint)
+{
+    for (FPeriodicPingState& PingState : PeriodicPingStates)
+    {
+        if (PingState.ServerEndpoint == ServerEndpoint)
+        {
+            PingState.bIsActive = false;
+
+            UE_LOG(LogMultiServerSync, Verbose, TEXT("Disabled periodic ping to %s"),
+                *ServerEndpoint.ToString());
+            return;
+        }
+    }
+}
+
+// 핑 타이머 틱 함수 구현
+bool FNetworkManager::TickLatencyMeasurement(float DeltaTime)
+{
+    // 활성화된 핑 상태가 없으면 틱 비활성화
+    bool bHasActivePings = false;
+
+    // 각 주기적 핑 상태 업데이트
+    for (FPeriodicPingState& PingState : PeriodicPingStates)
+    {
+        if (!PingState.bIsActive)
+            continue;
+
+        bHasActivePings = true;
+
+        // 남은 시간 감소
+        PingState.TimeRemainingSeconds -= DeltaTime;
+
+        // 시간이 다 되었으면 핑 전송
+        if (PingState.TimeRemainingSeconds <= 0.0f)
+        {
+            // 핑 요청 전송
+            SendPingRequest(PingState.ServerEndpoint);
+
+            // 타이머 리셋
+            PingState.TimeRemainingSeconds = PingState.IntervalSeconds;
+        }
+    }
+
+    // 활성화된 핑이 없으면 틱 함수 제거
+    if (!bHasActivePings && LatencyMeasurementTickHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(LatencyMeasurementTickHandle);
+        LatencyMeasurementTickHandle.Reset();
+    }
+
+    return true; // 틱 유지
+}
+
+// 네트워크 지연 통계 가져오기
+FNetworkLatencyStats FNetworkManager::GetLatencyStats(const FIPv4Endpoint& ServerEndpoint) const
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (ServerLatencyStats.Contains(ServerID))
+    {
+        return ServerLatencyStats[ServerID];
+    }
+
+    // 서버 통계가 없으면 기본값 반환
+    return FNetworkLatencyStats();
+}
+
+// 네트워크 품질 평가 함수
+int32 FNetworkManager::EvaluateNetworkQuality(const FIPv4Endpoint& ServerEndpoint) const
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (!ServerLatencyStats.Contains(ServerID))
+    {
+        return 0; // 불량 (데이터 없음)
+    }
+
+    const FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+
+    // 기본 품질 점수
+    int32 QualityScore = 3; // 최고 점수부터 시작
+
+    // 샘플 수가 너무 적으면 낮은 점수
+    if (Stats.SampleCount < 10)
+    {
+        return 1; // 데이터 불충분
+    }
+
+    // 평균 RTT에 따른 감점
+    if (Stats.AvgRTT > 150.0)
+        QualityScore--;
+    if (Stats.AvgRTT > 300.0)
+        QualityScore--;
+
+    // 지터에 따른 감점
+    if (Stats.Jitter > 50.0)
+        QualityScore--;
+    if (Stats.Jitter > 100.0)
+        QualityScore--;
+
+    // 패킷 손실에 따른 감점
+    float PacketLossRate = 0.0f;
+    if (Stats.SampleCount > 0)
+    {
+        PacketLossRate = static_cast<float>(Stats.LostPackets) / (Stats.SampleCount + Stats.LostPackets);
+    }
+
+    if (PacketLossRate > 0.05f) // 5% 이상 손실
+        QualityScore--;
+    if (PacketLossRate > 0.10f) // 10% 이상 손실
+        QualityScore--;
+
+    // 최종 점수 제한
+    return FMath::Clamp(QualityScore, 0, 3);
+}
+
+// 네트워크 품질 문자열 가져오기
+FString FNetworkManager::GetNetworkQualityString(const FIPv4Endpoint& ServerEndpoint) const
+{
+    int32 Quality = EvaluateNetworkQuality(ServerEndpoint);
+
+    switch (Quality)
+    {
+    case 0:
+        return TEXT("Poor");
+    case 1:
+        return TEXT("Fair");
+    case 2:
+        return TEXT("Good");
+    case 3:
+        return TEXT("Excellent");
+    default:
+        return TEXT("Unknown");
+    }
+}
+
+// 네트워크 지연 측정 시작
+void FNetworkManager::StartLatencyMeasurement(const FIPv4Endpoint& ServerEndpoint, float IntervalSeconds, int32 SampleCount)
+{
+    // 주기적 핑 활성화
+    EnablePeriodicPing(ServerEndpoint, IntervalSeconds);
+
+    // 로그 출력
+    UE_LOG(LogMultiServerSync, Log, TEXT("Started latency measurement to %s (Interval: %.2f s, Samples: %d)"),
+        *ServerEndpoint.ToString(), IntervalSeconds, SampleCount == 0 ? -1 : SampleCount);
+}
+
+// 네트워크 지연 측정 중지
+void FNetworkManager::StopLatencyMeasurement(const FIPv4Endpoint& ServerEndpoint)
+{
+    // 주기적 핑 비활성화
+    DisablePeriodicPing(ServerEndpoint);
+
+    // 로그 출력
+    UE_LOG(LogMultiServerSync, Log, TEXT("Stopped latency measurement to %s"),
+        *ServerEndpoint.ToString());
+
+    // 지연 통계 정보 출력
+    FString ServerID = ServerEndpoint.ToString();
+    if (ServerLatencyStats.Contains(ServerID))
+    {
+        const FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+        UE_LOG(LogMultiServerSync, Log, TEXT("Latency statistics for %s: Min=%.2f ms, Max=%.2f ms, Avg=%.2f ms, Jitter=%.2f ms, Samples=%d, Lost=%d"),
+            *ServerID, Stats.MinRTT, Stats.MaxRTT, Stats.AvgRTT, Stats.Jitter, Stats.SampleCount, Stats.LostPackets);
+    }
+}
+
+// FPingMessage 직렬화 함수 구현
+void FPingMessage::Serialize(FMemoryWriter& Writer) const
+{
+    // 메시지 타입 직렬화
+    uint8 TypeValue = static_cast<uint8>(Type);
+    Writer << TypeValue;
+
+    // 타임스탬프 직렬화 - 임시 변수 사용
+    uint64 TempTimestamp = Timestamp;
+    Writer << TempTimestamp;
+
+    // 시퀀스 번호 직렬화 - 임시 변수 사용
+    uint32 TempSeqNum = SequenceNumber;
+    Writer << TempSeqNum;
+}
+
+// FPingMessage 역직렬화 함수 구현
+void FPingMessage::Deserialize(FMemoryReader& Reader)
+{
+    // 메시지 타입 역직렬화
+    uint8 TypeValue;
+    Reader << TypeValue;
+    Type = static_cast<EPingMessageType>(TypeValue);
+
+    // 타임스탬프 역직렬화
+    Reader << Timestamp;
+
+    // 시퀀스 번호 역직렬화
+    Reader << SequenceNumber;
+}
+
+// FNetworkLatencyStats의 샘플 추가 함수 구현
+void FNetworkLatencyStats::AddRTTSample(double RTT)
+{
+    // 새 샘플 추가
+    RecentRTTs.Add(RTT);
+    CurrentRTT = RTT;
+
+    // 최대 샘플 수 제한
+    while (RecentRTTs.Num() > 100)
+    {
+        RecentRTTs.RemoveAt(0);
+    }
+
+    // 최소/최대 RTT 업데이트
+    MinRTT = FMath::Min(MinRTT, RTT);
+    MaxRTT = FMath::Max(MaxRTT, RTT);
+
+    // 평균 계산
+    double Sum = 0.0;
+    for (double Sample : RecentRTTs)
+    {
+        Sum += Sample;
+    }
+
+    AvgRTT = Sum / RecentRTTs.Num();
+
+    // 표준 편차 계산
+    double VarianceSum = 0.0;
+    for (double Sample : RecentRTTs)
+    {
+        double Diff = Sample - AvgRTT;
+        VarianceSum += (Diff * Diff);
+    }
+
+    StandardDeviation = FMath::Sqrt(VarianceSum / RecentRTTs.Num());
+
+    // 지터 계산 (연속된 샘플 간의 변화량의 평균)
+    if (RecentRTTs.Num() > 1)
+    {
+        double JitterSum = 0.0;
+        for (int32 i = 1; i < RecentRTTs.Num(); ++i)
+        {
+            JitterSum += FMath::Abs(RecentRTTs[i] - RecentRTTs[i - 1]);
+        }
+
+        Jitter = JitterSum / (RecentRTTs.Num() - 1);
+    }
+
+    // 샘플 수 업데이트
+    SampleCount++;
+
+    // 마지막 업데이트 시간 기록
+    LastUpdateTime = FPlatformTime::Seconds();
 }
