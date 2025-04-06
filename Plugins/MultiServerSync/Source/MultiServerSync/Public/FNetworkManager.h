@@ -21,7 +21,7 @@ enum class ENetworkMessageType : uint8
     Command = 4,      // 일반 명령 메시지
     Data = 5,         // 데이터 전송 메시지
 
-    // 추가: 마스터-슬레이브 프로토콜 관련 메시지
+    // 마스터-슬레이브 프로토콜 관련 메시지
     MasterAnnouncement = 10,  // 마스터가 자신의 상태를 알림
     MasterQuery = 11,         // 마스터 정보 요청
     MasterResponse = 12,      // 마스터 정보 응답
@@ -29,6 +29,13 @@ enum class ENetworkMessageType : uint8
     MasterVote = 14,          // 마스터 선출 투표
     MasterResign = 15,        // 마스터 사임 알림
     RoleChange = 16,          // 역할 변경 알림
+
+    // 설정 동기화 관련 메시지 추가
+    SettingsSync = 20,        // 설정 동기화 메시지
+    SettingsRequest = 21,     // 설정 요청 메시지
+    SettingsResponse = 22,    // 설정 응답 메시지
+    SettingsUpdate = 23,      // 설정 업데이트 알림
+    SettingsAck = 24,         // 설정 확인 응답
 
     Custom = 255      // 사용자 정의 메시지
 };
@@ -93,6 +100,26 @@ public:
     /** 플래그 설정하기 */
     void SetFlags(uint8 InFlags) { Header.Flags = InFlags; }
 
+    // FNetworkManager.cpp에 구현 추가
+    void FNetworkManager::RegisterSettingsMessageHandler(TFunction<void(const TArray<uint8>&, const FString&)> Handler)
+    {
+        SettingsMessageHandler = Handler;
+    }
+
+    /** 설정 메시지 핸들러 등록 */
+    void RegisterSettingsMessageHandler(TFunction<void(const TArray<uint8>&, const FString&)> Handler);
+
+    /** 설정 메시지 전송 */
+    bool SendSettingsMessage(const TArray<uint8>& SettingsData, ENetworkMessageType SettingsMsgType);
+
+    /** 설정 메시지 브로드캐스트 */
+    bool BroadcastSettingsMessage(const TArray<uint8>& SettingsData, ENetworkMessageType SettingsMsgType);
+
+    /** 특정 서버에 설정 메시지 전송 */
+    bool SendSettingsToServer(const FString& ServerId, const TArray<uint8>& SettingsData, ENetworkMessageType SettingsMsgType);
+
+
+
 private:
     /** 메시지 헤더 */
     FNetworkMessageHeader Header;
@@ -105,6 +132,16 @@ private:
 
     /** 프로토콜 버전 */
     static const uint8 PROTOCOL_VERSION = 1;
+
+    /** 설정 메시지 처리 메서드 */
+    void HandleSettingsSyncMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleSettingsRequestMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleSettingsResponseMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleSettingsUpdateMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleSettingsAckMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+
+    /** 설정 관련 콜백 */
+    TFunction<void(const TArray<uint8>&, const FString&)> SettingsMessageHandler;
 };
 
 /**

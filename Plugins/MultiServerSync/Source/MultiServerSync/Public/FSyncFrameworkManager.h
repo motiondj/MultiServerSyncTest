@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "FSettingsManager.h"
 #include "ISyncFrameworkManager.h"
 
 /**
@@ -30,6 +31,9 @@ public:
     virtual TSharedPtr<IFrameSyncController> GetFrameSyncController() const override;
     // End ISyncFrameworkManager interface
 
+    /** 설정 관리자 가져오기 */
+    TSharedPtr<FSettingsManager> GetSettingsManager() const;
+
 private:
     /** Environment detector subsystem */
     TSharedPtr<IEnvironmentDetector> EnvironmentDetector;
@@ -45,4 +49,13 @@ private:
 
     /** Indicates if the manager has been initialized */
     bool bIsInitialized;
+
+    /** 설정 관리자 */
+    TSharedPtr<FSettingsManager> SettingsManager;
+
+    /** 틱 델리게이트 핸들 */
+    FTSTicker::FDelegateHandle TickDelegateHandle;
+
+    /** 틱 핸들러 */
+    bool TickHandler(float DeltaTime);
 };
