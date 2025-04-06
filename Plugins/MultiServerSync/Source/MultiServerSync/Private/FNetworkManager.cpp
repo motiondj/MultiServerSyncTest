@@ -1803,9 +1803,10 @@ bool FNetworkManager::SendSettingsMessage(const TArray<uint8>& SettingsData, ENe
     }
 
     // 메시지 생성
-    FNetworkMessage Message(SettingsMsgType, SettingsData);
+    FNetworkMessage Message(ENetworkMessageType::SettingsSync, SettingsData);
     Message.SetProjectId(ProjectId);
     Message.SetSequenceNumber(GetNextSequenceNumber());
+    BroadcastMessageToServers(Message);
 
     // 메시지 브로드캐스트
     return BroadcastMessageToServers(Message);

@@ -39,7 +39,7 @@ bool FSettingsManager::Initialize()
     CurrentSettings.LastUpdatedTimeMs = FDateTime::Now().ToUnixTimestamp() * 1000;
 
     // 로컬 머신의 고유 ID를 포함
-    FString MachineId = FPlatformMisc::GetLoginId();
+    FString MachineId = FGuid::NewGuid().ToString();
     FString HostName = FPlatformProcess::ComputerName();
     CurrentSettings.ProjectName = FString::Printf(TEXT("%s_%s"), *FApp::GetProjectName(), *HostName);
 
