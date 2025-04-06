@@ -100,26 +100,6 @@ public:
     /** 플래그 설정하기 */
     void SetFlags(uint8 InFlags) { Header.Flags = InFlags; }
 
-    // FNetworkManager.cpp에 구현 추가
-    void FNetworkManager::RegisterSettingsMessageHandler(TFunction<void(const TArray<uint8>&, const FString&)> Handler)
-    {
-        SettingsMessageHandler = Handler;
-    }
-
-    /** 설정 메시지 핸들러 등록 */
-    void RegisterSettingsMessageHandler(TFunction<void(const TArray<uint8>&, const FString&)> Handler);
-
-    /** 설정 메시지 전송 */
-    bool SendSettingsMessage(const TArray<uint8>& SettingsData, ENetworkMessageType SettingsMsgType);
-
-    /** 설정 메시지 브로드캐스트 */
-    bool BroadcastSettingsMessage(const TArray<uint8>& SettingsData, ENetworkMessageType SettingsMsgType);
-
-    /** 특정 서버에 설정 메시지 전송 */
-    bool SendSettingsToServer(const FString& ServerId, const TArray<uint8>& SettingsData, ENetworkMessageType SettingsMsgType);
-
-
-
 private:
     /** 메시지 헤더 */
     FNetworkMessageHeader Header;
@@ -132,16 +112,6 @@ private:
 
     /** 프로토콜 버전 */
     static const uint8 PROTOCOL_VERSION = 1;
-
-    /** 설정 메시지 처리 메서드 */
-    void HandleSettingsSyncMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
-    void HandleSettingsRequestMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
-    void HandleSettingsResponseMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
-    void HandleSettingsUpdateMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
-    void HandleSettingsAckMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
-
-    /** 설정 관련 콜백 */
-    TFunction<void(const TArray<uint8>&, const FString&)> SettingsMessageHandler;
 };
 
 /**
@@ -330,6 +300,18 @@ public:
     /** 시간 동기화 메시지 전송 */
     bool SendTimeSyncMessage(const TArray<uint8>& PTPMessage);
 
+    /** 설정 메시지 핸들러 등록 */
+    void RegisterSettingsMessageHandler(TFunction<void(const TArray<uint8>&, const FString&)> Handler);
+
+    /** 설정 메시지 전송 */
+    bool SendSettingsMessage(const TArray<uint8>& SettingsData, ENetworkMessageType SettingsMsgType);
+
+    /** 설정 메시지 브로드캐스트 */
+    bool BroadcastSettingsMessage(const TArray<uint8>& SettingsData, ENetworkMessageType SettingsMsgType);
+
+    /** 특정 서버에 설정 메시지 전송 */
+    bool SendSettingsToServer(const FString& ServerId, const TArray<uint8>& SettingsData, ENetworkMessageType SettingsMsgType);
+
 private:
     /** Broadcast socket for server discovery */
     FSocket* BroadcastSocket;
@@ -379,6 +361,16 @@ private:
     TFunction<void(const FString&, bool)> MasterChangeHandler; // 마스터 변경 핸들러
     const float MASTER_TIMEOUT_SECONDS = 5.0f;    // 마스터 타임아웃 시간
     const float ELECTION_TIMEOUT_SECONDS = 3.0f;  // 선출 타임아웃 시간
+
+    /** 설정 메시지 처리 메서드 */
+    void HandleSettingsSyncMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleSettingsRequestMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleSettingsResponseMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleSettingsUpdateMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleSettingsAckMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+
+    /** 설정 관련 콜백 */
+    TFunction<void(const TArray<uint8>&, const FString&)> SettingsMessageHandler;
 
     /** 소켓 초기화 */
     bool InitializeSockets();

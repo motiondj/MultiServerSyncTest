@@ -138,7 +138,17 @@ bool FSettingsManager::SaveSettingsToFile(const FString& FilePath)
     }
 
     // 설정 직렬화
-    TArray<uint8> SerializedData = SerializeSettings();
+    TArray<uint8> FSettingsManager::SerializeSettings() const
+    {
+        TArray<uint8> Result;
+        FMemoryWriter MemWriter(Result);
+
+        // 설정 직렬화 - const 제거를 위해 복사본 사용
+        FGlobalSettings SettingsCopy = CurrentSettings;
+        MemWriter << SettingsCopy;
+
+        return Result;
+    }
 
     // 파일 저장
     bool bSuccess = FFileHelper::SaveArrayToFile(SerializedData, *PathToUse);
@@ -245,14 +255,48 @@ bool FSettingsManager::DeserializeSettings(const TArray<uint8>& Data)
 
 void FSettingsManager::RequestSettingsFromMaster()
 {
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
     UE_LOG(LogMultiServerSync, Display, TEXT("Requesting settings from master server"));
-    // 이 메서드는 나중에 NetworkManager를 통해 구현될 예정
+
+    // 요청 메시지 생성 - 여기서는 간단한 요청 ID만 포함
+    TArray<uint8> RequestData;
+    FString RequestId = FString::Printf(TEXT("%s:%lld"),
+        *FPlatformProcess::ComputerName(),
+        FDateTime::Now().ToUnixTimestamp());
+
+    // RequestId를 바이트 배열로 변환
+    RequestData.SetNum(RequestId.Len() * sizeof(TCHAR));
+    FMemory::Memcpy(RequestData.GetData(), *RequestId, RequestId.Len() * sizeof(TCHAR));
+
+    // 설정 업데이트 요청 상태 설정
+    bSettingsUpdatePending = true;
+    SettingsUpdateAttempts = 1;
+    LastSettingsUpdateTime = FPlatformTime::Seconds();
+
+    // 네트워크 매니저를 통해 요청 전송
+    // 이 메서드도 외부에서 NetworkManager 인스턴스를 가져와서 실행해야 함
 }
 
 void FSettingsManager::BroadcastSettings()
 {
-    UE_LOG(LogMultiServerSync, Display, TEXT("Broadcasting settings to all servers"));
-    // 이 메서드는 나중에 NetworkManager를 통해 구현될 예정
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Broadcasting current settings (v%d) to all servers"),
+        CurrentSettings.SettingsVersion);
+
+    // 현재 설정을 직렬화
+    TArray<uint8> SettingsData = SerializeSettings();
+
+    // 네트워크 매니저를 통해 설정 브로드캐스트
+    // 이 메서드는 외부에서 NetworkManager 인스턴스를 가져와서 실행해야 함
+    // 프레임워크 매니저가 이 메서드를 호출할 때 적절한 네트워크 매니저를 통해 송신
 }
 
 void FSettingsManager::RegisterOnSettingsChangedCallback(TFunction<void(const FGlobalSettings&)> Callback)
@@ -564,52 +608,6 @@ template bool FSettingsManager::UpdateSettingValue<FString>(const FString& Setti
 template bool FSettingsManager::UpdateSettingValue<int32>(const FString& SettingName, const int32& Value);
 template bool FSettingsManager::UpdateSettingValue<float>(const FString& SettingName, const float& Value);
 template bool FSettingsManager::UpdateSettingValue<bool>(const FString& SettingName, const bool& Value);
-
-void FSettingsManager::BroadcastSettings()
-{
-    if (!bIsInitialized)
-    {
-        return;
-    }
-
-    UE_LOG(LogMultiServerSync, Display, TEXT("Broadcasting current settings (v%d) to all servers"),
-        CurrentSettings.SettingsVersion);
-
-    // 현재 설정을 직렬화
-    TArray<uint8> SettingsData = SerializeSettings();
-
-    // 네트워크 매니저를 통해 설정 브로드캐스트
-    // 이 메서드는 외부에서 NetworkManager 인스턴스를 가져와서 실행해야 함
-    // 프레임워크 매니저가 이 메서드를 호출할 때 적절한 네트워크 매니저를 통해 송신
-}
-
-void FSettingsManager::RequestSettingsFromMaster()
-{
-    if (!bIsInitialized)
-    {
-        return;
-    }
-
-    UE_LOG(LogMultiServerSync, Display, TEXT("Requesting settings from master server"));
-
-    // 요청 메시지 생성 - 여기서는 간단한 요청 ID만 포함
-    TArray<uint8> RequestData;
-    FString RequestId = FString::Printf(TEXT("%s:%lld"),
-        *FPlatformProcess::ComputerName(),
-        FDateTime::Now().ToUnixTimestamp());
-
-    // RequestId를 바이트 배열로 변환
-    RequestData.SetNum(RequestId.Len() * sizeof(TCHAR));
-    FMemory::Memcpy(RequestData.GetData(), *RequestId, RequestId.Len() * sizeof(TCHAR));
-
-    // 설정 업데이트 요청 상태 설정
-    bSettingsUpdatePending = true;
-    SettingsUpdateAttempts = 1;
-    LastSettingsUpdateTime = FPlatformTime::Seconds();
-
-    // 네트워크 매니저를 통해 요청 전송
-    // 이 메서드도 외부에서 NetworkManager 인스턴스를 가져와서 실행해야 함
-}
 
 TSharedPtr<FSettingsManager> FSyncFrameworkManager::GetSettingsManager() const
 {
