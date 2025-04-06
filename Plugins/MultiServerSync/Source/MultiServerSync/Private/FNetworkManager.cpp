@@ -193,6 +193,12 @@ FNetworkManager::FNetworkManager()
     , CurrentSequenceNumber(0)
     , Port(DEFAULT_PORT)
     , ReceiverWorker(nullptr)
+    , bIsMaster(false)
+    , MasterPriority(0.0f)
+    , bElectionInProgress(false)
+    , CurrentElectionTerm(0)
+    , LastMasterAnnouncementTime(0.0)
+    , LastElectionStartTime(0.0)
 {
     // 프로젝트 ID 초기화
     ProjectId = FGuid::NewGuid();
@@ -206,6 +212,40 @@ FNetworkManager::FNetworkManager()
 
     // 프로젝트 버전 설정
     ProjectVersion = TEXT("1.0");
+
+    // 마스터 우선순위 랜덤 초기화 (0.1 ~ 0.9)
+    MasterPriority = 0.1f + 0.8f * FMath::FRand();
+}
+
+// 마스터 상태 확인 메서드
+bool FNetworkManager::IsMaster() const
+{
+    return bIsMaster;
+}
+
+// 마스터 ID 반환 메서드
+FString FNetworkManager::GetMasterId() const
+{
+    return CurrentMaster.ServerId;
+}
+
+// 마스터 정보 반환 메서드
+FMasterInfo FNetworkManager::GetMasterInfo() const
+{
+    return CurrentMaster;
+}
+
+// 마스터 우선순위 설정 메서드
+void FNetworkManager::SetMasterPriority(float Priority)
+{
+    MasterPriority = FMath::Clamp(Priority, 0.0f, 1.0f);
+    UE_LOG(LogMultiServerSync, Display, TEXT("Master priority set to %.2f"), MasterPriority);
+}
+
+// 마스터 변경 핸들러 등록 메서드
+void FNetworkManager::RegisterMasterChangeHandler(TFunction<void(const FString&, bool)> Handler)
+{
+    MasterChangeHandler = Handler;
 }
 
 FNetworkManager::~FNetworkManager()
@@ -238,6 +278,34 @@ bool FNetworkManager::Initialize()
 
     // 서버 탐색 시작
     SendDiscoveryMessage();
+
+    // 마스터 정보 요청
+    FString QueryData = HostName;
+    TArray<uint8> QueryBytes;
+    QueryBytes.SetNum(QueryData.Len() * sizeof(TCHAR));
+    FMemory::Memcpy(QueryBytes.GetData(), *QueryData, QueryData.Len() * sizeof(TCHAR));
+
+    FNetworkMessage Message(ENetworkMessageType::MasterQuery, QueryBytes);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    // 처음 5초 동안 2초 대기 후 마스터 정보가 없으면 마스터 선출 시작
+    FTimerHandle MasterElectionTimerHandle;
+    FTimerDelegate MasterElectionTimerDelegate;
+    MasterElectionTimerDelegate.BindLambda([this]() {
+        if (CurrentMaster.ServerId.IsEmpty() && !bElectionInProgress)
+        {
+            StartMasterElection();
+        }
+        });
+
+    // 현재는 타이머 구현을 하지 않지만, 실제 구현에서는 타이머를 사용해야 합니다.
+    // 여기서는 간단히 마스터 요청 메시지를 브로드캐스트
+    BroadcastMessageToServers(Message);
+
+    // 마스터-슬레이브 프로토콜 틱 등록
+    FTickerDelegate TickDelegate = FTickerDelegate::CreateRaw(this, &FNetworkManager::MasterSlaveProtocolTick);
+    MasterSlaveTickHandle = FTSTicker::GetCoreTicker().AddTicker(TickDelegate, 1.0f); // 1초마다 호출
 
     return true;
 }
@@ -273,6 +341,9 @@ void FNetworkManager::Shutdown()
         ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ReceiveSocket);
         ReceiveSocket = nullptr;
     }
+
+    // 틱 해제
+    FTSTicker::GetCoreTicker().RemoveTicker(MasterSlaveTickHandle);
 
     // 메모리 정리
     delete ReceiverWorker;
@@ -387,6 +458,28 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
         break;
     case ENetworkMessageType::Data:
         HandleDataMessage(Message, Sender);
+        break;
+        // 추가: 마스터-슬레이브 프로토콜 메시지 처리
+    case ENetworkMessageType::MasterAnnouncement:
+        HandleMasterAnnouncement(Message, Sender);
+        break;
+    case ENetworkMessageType::MasterQuery:
+        HandleMasterQuery(Message, Sender);
+        break;
+    case ENetworkMessageType::MasterResponse:
+        HandleMasterResponse(Message, Sender);
+        break;
+    case ENetworkMessageType::MasterElection:
+        HandleMasterElection(Message, Sender);
+        break;
+    case ENetworkMessageType::MasterVote:
+        HandleMasterVote(Message, Sender);
+        break;
+    case ENetworkMessageType::MasterResign:
+        HandleMasterResign(Message, Sender);
+        break;
+    case ENetworkMessageType::RoleChange:
+        HandleRoleChange(Message, Sender);
         break;
     case ENetworkMessageType::Custom:
         HandleCustomMessage(Message, Sender);
@@ -851,4 +944,827 @@ bool FNetworkManager::HasEnoughTimePassed(double& LastTime, double Interval) con
     }
     
     return false;
+}
+
+// 마스터 선출 시작 메서드
+bool FNetworkManager::StartMasterElection()
+{
+    if (!bIsInitialized)
+    {
+        return false;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Starting master election..."));
+
+    // 이미 선출 진행 중이면 무시
+    if (bElectionInProgress)
+    {
+        UE_LOG(LogMultiServerSync, Display, TEXT("Election already in progress"));
+        return true;
+    }
+
+    // 선출 정보 초기화
+    bElectionInProgress = true;
+    CurrentElectionTerm++;
+    ElectionVotes.Empty();
+    LastElectionStartTime = FPlatformTime::Seconds();
+
+    // 자신에게 투표
+    float SelfVotePriority = CalculateVotePriority();
+    ElectionVotes.Add(HostName, SelfVotePriority);
+
+    // 선출 메시지 생성
+    FString ElectionData = FString::Printf(TEXT("%s:%d:%f"),
+        *HostName, CurrentElectionTerm, SelfVotePriority);
+    TArray<uint8> ElectionBytes;
+    ElectionBytes.SetNum(ElectionData.Len() * sizeof(TCHAR));
+    FMemory::Memcpy(ElectionBytes.GetData(), *ElectionData, ElectionData.Len() * sizeof(TCHAR));
+
+    // 선출 메시지 브로드캐스트
+    FNetworkMessage Message(ENetworkMessageType::MasterElection, ElectionBytes);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Broadcasting election message: %s"), *ElectionData);
+    return BroadcastMessageToServers(Message);
+}
+
+// 마스터 공지 메서드
+void FNetworkManager::AnnounceMaster()
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    // 로컬 서버가 마스터가 아니면 무시
+    if (!bIsMaster)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Cannot announce master: local server is not master"));
+        return;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Announcing master status..."));
+
+    // 마스터 정보 생성
+    FMasterInfo MasterInfo;
+    MasterInfo.ServerId = HostName;
+    MasterInfo.Priority = MasterPriority;
+    MasterInfo.LastUpdateTime = FPlatformTime::Seconds();
+    MasterInfo.ElectionTerm = CurrentElectionTerm;
+
+    // 로컬 IP 주소 가져오기
+    bool bCanBindAll = false;
+    TSharedPtr<FInternetAddr> LocalAddr = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetLocalHostAddr(*GLog, bCanBindAll);
+    if (LocalAddr.IsValid())
+    {
+        uint32 LocalIP = 0;
+        LocalAddr->GetIp(LocalIP);
+        MasterInfo.IPAddress = FIPv4Address(LocalIP);
+    }
+    // 여기서 클래스 멤버 변수를 사용
+    MasterInfo.Port = this->Port;
+
+    // 마스터 정보를 문자열로 직렬화
+    FString MasterData = FString::Printf(TEXT("%s:%s:%d:%f:%d"),
+        *MasterInfo.ServerId,
+        *MasterInfo.IPAddress.ToString(),
+        MasterInfo.Port,
+        MasterInfo.Priority,
+        MasterInfo.ElectionTerm);
+
+    TArray<uint8> MasterBytes;
+    MasterBytes.SetNum(MasterData.Len() * sizeof(TCHAR));
+    FMemory::Memcpy(MasterBytes.GetData(), *MasterData, MasterData.Len() * sizeof(TCHAR));
+
+    // 마스터 공지 메시지 생성 및 브로드캐스트
+    FNetworkMessage Message(ENetworkMessageType::MasterAnnouncement, MasterBytes);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    BroadcastMessageToServers(Message);
+    LastMasterAnnouncementTime = FPlatformTime::Seconds();
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Master announcement sent: %s"), *MasterData);
+}
+
+// 마스터 사임 메서드
+void FNetworkManager::ResignMaster()
+{
+    if (!bIsInitialized || !bIsMaster)
+    {
+        return;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Resigning as master..."));
+
+    // 마스터 사임 메시지 생성
+    FString ResignData = HostName;
+    TArray<uint8> ResignBytes;
+    ResignBytes.SetNum(ResignData.Len() * sizeof(TCHAR));
+    FMemory::Memcpy(ResignBytes.GetData(), *ResignData, ResignData.Len() * sizeof(TCHAR));
+
+    // 사임 메시지 브로드캐스트
+    FNetworkMessage Message(ENetworkMessageType::MasterResign, ResignBytes);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    BroadcastMessageToServers(Message);
+
+    // 마스터 상태 업데이트
+    bIsMaster = false;
+    CurrentMaster = FMasterInfo(); // 빈 마스터 정보
+
+    // 로컬 서버 상태 변경 알림
+    UE_LOG(LogMultiServerSync, Display, TEXT("Local server is no longer master"));
+
+    // 핸들러 호출
+    if (MasterChangeHandler)
+    {
+        MasterChangeHandler(TEXT(""), false);
+    }
+
+    // 새 마스터 선출 시작
+    StartMasterElection();
+}
+
+// 마스터 투표 전송 메서드 
+void FNetworkManager::SendElectionVote(const FString& CandidateId)
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Sending vote for candidate: %s"), *CandidateId);
+
+    // 투표 메시지 생성
+    FString VoteData = FString::Printf(TEXT("%s:%s:%d:%f"),
+        *HostName, *CandidateId, CurrentElectionTerm, MasterPriority);
+    TArray<uint8> VoteBytes;
+    VoteBytes.SetNum(VoteData.Len() * sizeof(TCHAR));
+    FMemory::Memcpy(VoteBytes.GetData(), *VoteData, VoteData.Len() * sizeof(TCHAR));
+
+    // 투표 메시지 브로드캐스트
+    FNetworkMessage Message(ENetworkMessageType::MasterVote, VoteBytes);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    BroadcastMessageToServers(Message);
+}
+
+// 마스터가 되려고 시도하는 메서드
+bool FNetworkManager::TryBecomeMaster()
+{
+    if (!bIsInitialized)
+    {
+        return false;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Trying to become master..."));
+
+    // 이미 마스터면 무시
+    if (bIsMaster)
+    {
+        UE_LOG(LogMultiServerSync, Display, TEXT("Already master"));
+        return true;
+    }
+
+    // 투표 집계 및 우승자 결정
+    FString WinnerId;
+    float HighestPriority = -1.0f;
+
+    for (const auto& Pair : ElectionVotes)
+    {
+        if (Pair.Value > HighestPriority)
+        {
+            HighestPriority = Pair.Value;
+            WinnerId = Pair.Key;
+        }
+    }
+
+    // 우승자가 자신인 경우
+    if (WinnerId == HostName)
+    {
+        UE_LOG(LogMultiServerSync, Display, TEXT("Local server won election with priority %.2f"), HighestPriority);
+
+        // 마스터 상태 업데이트
+        bIsMaster = true;
+
+        // 마스터 정보 업데이트
+        CurrentMaster.ServerId = HostName;
+
+        // 로컬 IP 주소 가져오기
+        bool bCanBindAll = false;
+        TSharedPtr<FInternetAddr> LocalAddr = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetLocalHostAddr(*GLog, bCanBindAll);
+        if (LocalAddr.IsValid())
+        {
+            uint32 LocalIP = 0;
+            LocalAddr->GetIp(LocalIP);
+            CurrentMaster.IPAddress = FIPv4Address(LocalIP);
+        }
+
+        CurrentMaster.Port = Port;
+        CurrentMaster.Priority = MasterPriority;
+        CurrentMaster.LastUpdateTime = FPlatformTime::Seconds();
+        CurrentMaster.ElectionTerm = CurrentElectionTerm;
+
+        // 마스터 상태 공지
+        AnnounceMaster();
+
+        // 마스터 변경 핸들러 호출
+        if (MasterChangeHandler)
+        {
+            MasterChangeHandler(HostName, true);
+        }
+
+        return true;
+    }
+    else
+    {
+        UE_LOG(LogMultiServerSync, Display, TEXT("Election lost to %s with priority %.2f"), *WinnerId, HighestPriority);
+        return false;
+    }
+}
+
+// 선출 종료 메서드
+void FNetworkManager::EndElection(const FString& WinnerId, int32 ElectionTerm)
+{
+    if (!bIsInitialized || !bElectionInProgress)
+    {
+        return;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Ending election: winner=%s, term=%d"), *WinnerId, ElectionTerm);
+
+    // 선출 진행 플래그 초기화
+    bElectionInProgress = false;
+
+    // 자신이 우승자인 경우
+    if (WinnerId == HostName)
+    {
+        TryBecomeMaster();
+    }
+    else
+    {
+        // 다른 서버가 우승자인 경우, 해당 서버의 마스터 상태를 기다림
+        // 해당 서버로부터 마스터 공지가 오면 HandleMasterAnnouncement에서 처리됨
+    }
+}
+
+// 마스터 타임아웃 체크 메서드
+void FNetworkManager::CheckMasterTimeout()
+{
+    if (!bIsInitialized || bIsMaster)
+    {
+        return; // 자신이 마스터면 체크하지 않음
+    }
+
+    double CurrentTime = FPlatformTime::Seconds();
+
+    // 선출이 진행 중인 경우 선출 타임아웃 체크
+    if (bElectionInProgress)
+    {
+        if (CurrentTime - LastElectionStartTime > ELECTION_TIMEOUT_SECONDS)
+        {
+            UE_LOG(LogMultiServerSync, Display, TEXT("Election timeout, resolving election..."));
+
+            // 투표 결과에 따라 마스터 결정
+            TryBecomeMaster();
+
+            // 선출 종료
+            bElectionInProgress = false;
+        }
+        return;
+    }
+
+    // 마스터 타임아웃 체크
+    if (CurrentMaster.ServerId.IsEmpty() ||
+        CurrentTime - CurrentMaster.LastUpdateTime > MASTER_TIMEOUT_SECONDS)
+    {
+        UE_LOG(LogMultiServerSync, Display, TEXT("Master timeout, starting new election..."));
+
+        // 새 마스터 선출 시작
+        StartMasterElection();
+    }
+}
+
+// 투표 우선순위 계산 메서드
+float FNetworkManager::CalculateVotePriority()
+{
+    // 기본적으로 설정된 마스터 우선순위 사용
+    float Priority = MasterPriority;
+
+    // 추가 요소를 고려하여 우선순위 조정 가능
+    // 예: 시스템 리소스, 네트워크 상태 등
+
+    return Priority;
+}
+
+// 마스터 상태 업데이트 메서드
+void FNetworkManager::UpdateMasterStatus(const FString& NewMasterId, bool bLocalServerIsMaster)
+{
+    // 변경 사항이 없으면 무시
+    if (bLocalServerIsMaster == bIsMaster && NewMasterId == CurrentMaster.ServerId)
+    {
+        return;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Updating master status: new master=%s, local is master=%s"),
+        *NewMasterId, bLocalServerIsMaster ? TEXT("true") : TEXT("false"));
+
+    // 마스터 상태 업데이트
+    bIsMaster = bLocalServerIsMaster;
+
+    // 핸들러 호출
+    if (MasterChangeHandler)
+    {
+        MasterChangeHandler(NewMasterId, bLocalServerIsMaster);
+    }
+}
+
+// 역할 변경 알림 전송 메서드
+void FNetworkManager::SendRoleChangeNotification()
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Sending role change notification: master=%s"),
+        bIsMaster ? TEXT("true") : TEXT("false"));
+
+    // 역할 정보 생성
+    FString RoleData = FString::Printf(TEXT("%s:%s:%d"),
+        *HostName, bIsMaster ? TEXT("true") : TEXT("false"), CurrentElectionTerm);
+    TArray<uint8> RoleBytes;
+    RoleBytes.SetNum(RoleData.Len() * sizeof(TCHAR));
+    FMemory::Memcpy(RoleBytes.GetData(), *RoleData, RoleData.Len() * sizeof(TCHAR));
+
+    // 역할 변경 메시지 생성 및 브로드캐스트
+    FNetworkMessage Message(ENetworkMessageType::RoleChange, RoleBytes);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    BroadcastMessageToServers(Message);
+}
+
+// 마스터 공지 메시지 처리 메서드
+void FNetworkManager::HandleMasterAnnouncement(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    // 메시지 데이터 파싱
+    FString MasterData;
+    if (Message.GetData().Num() > 0)
+    {
+        MasterData = FString((TCHAR*)Message.GetData().GetData(), Message.GetData().Num() / sizeof(TCHAR));
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Received master announcement: %s"), *MasterData);
+
+    // 마스터 정보 파싱
+    TArray<FString> Parts;
+    MasterData.ParseIntoArray(Parts, TEXT(":"), true);
+
+    if (Parts.Num() < 5)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Invalid master announcement data format"));
+        return;
+    }
+
+    FString MasterId = Parts[0];
+    FString IPAddressStr = Parts[1];
+    // 'Port' 변수 이름 변경 -> 'PortNumber'
+    int32 PortNumber = FCString::Atoi(*Parts[2]);
+    float Priority = FCString::Atof(*Parts[3]);
+    int32 ElectionTerm = FCString::Atoi(*Parts[4]);
+
+    // 발신자가 자신인 경우 무시
+    if (MasterId == HostName)
+    {
+        return;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address MasterIP;
+    FIPv4Address::Parse(IPAddressStr, MasterIP);
+
+    // 마스터 정보 업데이트
+    FMasterInfo NewMasterInfo;
+    NewMasterInfo.ServerId = MasterId;
+    NewMasterInfo.IPAddress = MasterIP;
+    // 변경된 변수명 사용
+    NewMasterInfo.Port = PortNumber;
+    NewMasterInfo.Priority = Priority;
+
+    // 현재 선출 기간보다 이전이면 무시
+    if (ElectionTerm < CurrentElectionTerm)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Ignoring master announcement from previous election term"));
+        return;
+    }
+
+    // 다른 서버가 마스터가 됨
+    CurrentElectionTerm = ElectionTerm;
+    CurrentMaster = NewMasterInfo;
+    bElectionInProgress = false;
+
+    // 자신이 이전에 마스터였다면 역할 변경
+    if (bIsMaster)
+    {
+        bIsMaster = false;
+        UpdateMasterStatus(MasterId, false);
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Master updated: %s"), *CurrentMaster.ToString());
+}
+
+// 마스터 정보 요청 메시지 처리 메서드
+void FNetworkManager::HandleMasterQuery(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    // 메시지 데이터 파싱
+    FString QueryData;
+    if (Message.GetData().Num() > 0)
+    {
+        QueryData = FString((TCHAR*)Message.GetData().GetData(), Message.GetData().Num() / sizeof(TCHAR));
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Received master query from: %s"), *QueryData);
+
+    // 현재 마스터 정보 확인
+    if (bIsMaster)
+    {
+        // 자신이 마스터인 경우, 마스터 공지 전송
+        AnnounceMaster();
+    }
+    else if (!CurrentMaster.ServerId.IsEmpty())
+    {
+        // 알고 있는 마스터 정보가 있는 경우, 마스터 정보 응답 전송
+        FString MasterData = FString::Printf(TEXT("%s:%s:%d:%f:%d"),
+            *CurrentMaster.ServerId,
+            *CurrentMaster.IPAddress.ToString(),
+            CurrentMaster.Port,
+            CurrentMaster.Priority,
+            CurrentMaster.ElectionTerm);
+
+        TArray<uint8> MasterBytes;
+        MasterBytes.SetNum(MasterData.Len() * sizeof(TCHAR));
+        FMemory::Memcpy(MasterBytes.GetData(), *MasterData, MasterData.Len() * sizeof(TCHAR));
+
+        FNetworkMessage Response(ENetworkMessageType::MasterResponse, MasterBytes);
+        Response.SetProjectId(ProjectId);
+        Response.SetSequenceNumber(GetNextSequenceNumber());
+
+        SendMessageToEndpoint(Sender, Response);
+    }
+    else
+    {
+        // 마스터 정보가 없는 경우, 새 마스터 선출 시작
+        StartMasterElection();
+    }
+}
+
+// 마스터 정보 응답 메시지 처리 메서드
+void FNetworkManager::HandleMasterResponse(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    // 메시지 데이터 파싱
+    FString MasterData;
+    if (Message.GetData().Num() > 0)
+    {
+        MasterData = FString((TCHAR*)Message.GetData().GetData(), Message.GetData().Num() / sizeof(TCHAR));
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Received master response: %s"), *MasterData);
+
+    // 마스터 정보 파싱
+    TArray<FString> Parts;
+    MasterData.ParseIntoArray(Parts, TEXT(":"), true);
+
+    if (Parts.Num() < 5)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Invalid master response data format"));
+        return;
+    }
+
+    FString MasterId = Parts[0];
+    FString IPAddressStr = Parts[1];
+    // 'Port' 변수 이름 변경 -> 'PortNumber'
+    int32 PortNumber = FCString::Atoi(*Parts[2]);
+    float Priority = FCString::Atof(*Parts[3]);
+    int32 ElectionTerm = FCString::Atoi(*Parts[4]);
+
+    // IP 주소 파싱
+    FIPv4Address MasterIP;
+    FIPv4Address::Parse(IPAddressStr, MasterIP);
+
+    // 마스터 정보 업데이트
+    FMasterInfo NewMasterInfo;
+    NewMasterInfo.ServerId = MasterId;
+    NewMasterInfo.IPAddress = MasterIP;
+    // 여기서 변경된 변수명 사용
+    NewMasterInfo.Port = PortNumber;
+    NewMasterInfo.Priority = Priority;
+    NewMasterInfo.ElectionTerm = ElectionTerm;
+
+    // 현재 선출 기간보다 이전이면 무시
+    if (ElectionTerm < CurrentElectionTerm)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Ignoring master response from previous election term"));
+        return;
+    }
+
+    // 마스터 정보 업데이트
+    CurrentElectionTerm = ElectionTerm;
+    CurrentMaster = NewMasterInfo;
+    bElectionInProgress = false;
+
+    // 자신이 이전에 마스터였다면 역할 변경
+    if (bIsMaster && MasterId != HostName)
+    {
+        bIsMaster = false;
+        UpdateMasterStatus(MasterId, false);
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Master updated from response: %s"), *CurrentMaster.ToString());
+}
+
+// 마스터 선출 메시지 처리 메서드
+void FNetworkManager::HandleMasterElection(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    // 메시지 데이터 파싱
+    FString ElectionData;
+    if (Message.GetData().Num() > 0)
+    {
+        ElectionData = FString((TCHAR*)Message.GetData().GetData(), Message.GetData().Num() / sizeof(TCHAR));
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Received election message: %s"), *ElectionData);
+
+    // 선출 정보 파싱
+    TArray<FString> Parts;
+    ElectionData.ParseIntoArray(Parts, TEXT(":"), true);
+
+    if (Parts.Num() < 3)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Invalid election data format"));
+        return;
+    }
+
+    FString CandidateId = Parts[0];
+    int32 ElectionTerm = FCString::Atoi(*Parts[1]);
+    float Priority = FCString::Atof(*Parts[2]);
+
+    // 발신자가 자신인 경우 무시
+    if (CandidateId == HostName)
+    {
+        return;
+    }
+
+    // 현재 선출 기간보다 이전이면 무시
+    if (ElectionTerm < CurrentElectionTerm)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Ignoring election from previous term"));
+        return;
+    }
+
+    // 더 높은 선출 기간이면 자신의 선출 기간 업데이트
+    if (ElectionTerm > CurrentElectionTerm)
+    {
+        CurrentElectionTerm = ElectionTerm;
+        bElectionInProgress = true;
+        ElectionVotes.Empty();
+        LastElectionStartTime = FPlatformTime::Seconds();
+    }
+
+    // 후보자에게 투표
+    ElectionVotes.Add(CandidateId, Priority);
+    SendElectionVote(CandidateId);
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Voted for candidate: %s with priority %.2f"), *CandidateId, Priority);
+}
+
+// 마스터 투표 메시지 처리 메서드
+void FNetworkManager::HandleMasterVote(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    if (!bIsInitialized || !bElectionInProgress)
+    {
+        return;
+    }
+
+    // 메시지 데이터 파싱
+    FString VoteData;
+    if (Message.GetData().Num() > 0)
+    {
+        VoteData = FString((TCHAR*)Message.GetData().GetData(), Message.GetData().Num() / sizeof(TCHAR));
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Received vote: %s"), *VoteData);
+
+    // 투표 정보 파싱
+    TArray<FString> Parts;
+    VoteData.ParseIntoArray(Parts, TEXT(":"), true);
+
+    if (Parts.Num() < 4)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Invalid vote data format"));
+        return;
+    }
+
+    FString VoterId = Parts[0];
+    FString CandidateId = Parts[1];
+    int32 ElectionTerm = FCString::Atoi(*Parts[2]);
+    float VoterPriority = FCString::Atof(*Parts[3]);
+
+    // 발신자가 자신인 경우 무시
+    if (VoterId == HostName)
+    {
+        return;
+    }
+
+    // 선출 기간이 맞지 않으면 무시
+    if (ElectionTerm != CurrentElectionTerm)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Ignoring vote from different election term"));
+        return;
+    }
+
+    // 자신이 후보자인 경우에만 투표 수집
+    if (CandidateId == HostName)
+    {
+        float* ExistingVote = ElectionVotes.Find(VoterId);
+        if (!ExistingVote || *ExistingVote < VoterPriority)
+        {
+            ElectionVotes.Add(VoterId, VoterPriority);
+            UE_LOG(LogMultiServerSync, Display, TEXT("Received vote from %s with priority %.2f"), *VoterId, VoterPriority);
+        }
+
+        // 투표 수가 서버 총 개수의 과반수 이상이면 마스터 결정
+        if (ElectionVotes.Num() > (DiscoveredServers.Num() + 1) / 2) // +1은 자신을 포함
+        {
+            UE_LOG(LogMultiServerSync, Display, TEXT("Received majority votes, becoming master"));
+            TryBecomeMaster();
+            bElectionInProgress = false;
+        }
+    }
+}
+
+// 마스터 사임 메시지 처리 메서드
+void FNetworkManager::HandleMasterResign(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    // 메시지 데이터 파싱
+    FString ResignData;
+    if (Message.GetData().Num() > 0)
+    {
+        ResignData = FString((TCHAR*)Message.GetData().GetData(), Message.GetData().Num() / sizeof(TCHAR));
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Received master resign: %s"), *ResignData);
+
+    // 사임한 마스터 ID
+    FString ResignedMasterId = ResignData;
+
+    // 현재 마스터가 사임한 경우에만 처리
+    if (ResignedMasterId == CurrentMaster.ServerId)
+    {
+        UE_LOG(LogMultiServerSync, Display, TEXT("Current master has resigned, starting new election"));
+
+        // 마스터 정보 초기화
+        CurrentMaster = FMasterInfo();
+
+        // 새 마스터 선출 시작
+        StartMasterElection();
+    }
+}
+
+// 역할 변경 메시지 처리 메서드 (계속)
+void FNetworkManager::HandleRoleChange(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    // 메시지 데이터 파싱
+    FString RoleData;
+    if (Message.GetData().Num() > 0)
+    {
+        RoleData = FString((TCHAR*)Message.GetData().GetData(), Message.GetData().Num() / sizeof(TCHAR));
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Received role change: %s"), *RoleData);
+
+    // 역할 정보 파싱
+    TArray<FString> Parts;
+    RoleData.ParseIntoArray(Parts, TEXT(":"), true);
+
+    if (Parts.Num() < 3)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Invalid role change data format"));
+        return;
+    }
+
+    FString ServerId = Parts[0];
+    bool bServerIsMaster = Parts[1].ToBool();
+    int32 ElectionTerm = FCString::Atoi(*Parts[2]);
+
+    // 선출 기간이 맞지 않으면 무시
+    if (ElectionTerm < CurrentElectionTerm)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Ignoring role change from previous election term"));
+        return;
+    }
+
+    // 발신자가 자신인 경우 무시
+    if (ServerId == HostName)
+    {
+        return;
+    }
+
+    // 서버가 마스터가 된 경우
+    if (bServerIsMaster)
+    {
+        UE_LOG(LogMultiServerSync, Display, TEXT("Server %s is now master (term: %d)"), *ServerId, ElectionTerm);
+
+        // 선출 상태 업데이트
+        CurrentElectionTerm = ElectionTerm;
+        bElectionInProgress = false;
+
+        // 마스터 정보 업데이트
+        // 여기서는 IP 주소와 포트를 알 수 없으므로 마스터 공지를 기다림
+
+        // 자신이 마스터였다면 역할 변경
+        if (bIsMaster)
+        {
+            bIsMaster = false;
+            UpdateMasterStatus(ServerId, false);
+        }
+    }
+}
+
+// 주기적인 마스터 상태 업데이트 메서드
+void FNetworkManager::TickMasterSlaveProtocol()
+{
+    if (!bIsInitialized)
+    {
+        return;
+    }
+
+    double CurrentTime = FPlatformTime::Seconds();
+
+    // 마스터 타임아웃 체크
+    CheckMasterTimeout();
+
+    // 마스터인 경우 주기적으로 마스터 상태 공지
+    if (bIsMaster)
+    {
+        // 마지막 마스터 공지 이후 MASTER_ANNOUNCEMENT_INTERVAL 시간이 지났으면 다시 공지
+        const float MASTER_ANNOUNCEMENT_INTERVAL = 2.0f; // 2초마다 공지
+        if (CurrentTime - LastMasterAnnouncementTime > MASTER_ANNOUNCEMENT_INTERVAL)
+        {
+            AnnounceMaster();
+        }
+    }
+
+    // 선출 진행 중인 경우 타임아웃 체크
+    if (bElectionInProgress)
+    {
+        // 선출 시작 이후 ELECTION_TIMEOUT_SECONDS 시간이 지났으면 선출 종료
+        if (CurrentTime - LastElectionStartTime > ELECTION_TIMEOUT_SECONDS)
+        {
+            UE_LOG(LogMultiServerSync, Display, TEXT("Election timeout, resolving election..."));
+            TryBecomeMaster();
+            bElectionInProgress = false;
+        }
+    }
+}
+
+// 마스터-슬레이브 프로토콜 틱 콜백
+bool FNetworkManager::MasterSlaveProtocolTick(float DeltaTime)
+{
+    TickMasterSlaveProtocol();
+    return true; // 계속 틱 유지
 }

@@ -49,8 +49,18 @@ public:
     // Register a message handler callback
     virtual void RegisterMessageHandler(TFunction<void(const FString&, const TArray<uint8>&)> Handler) = 0;
 
-    // 서버 탐색 메서드 추가 (override 키워드 없이)
+    // 서버 탐색 메서드
     virtual bool DiscoverServers() = 0;
+
+    // 마스터-슬레이브 관련 메서드
+    virtual bool IsMaster() const = 0;
+    virtual FString GetMasterId() const = 0;
+    virtual bool StartMasterElection() = 0;
+    virtual void AnnounceMaster() = 0;
+    virtual void ResignMaster() = 0;
+    virtual struct FMasterInfo GetMasterInfo() const = 0;
+    virtual void SetMasterPriority(float Priority) = 0;
+    virtual void RegisterMasterChangeHandler(TFunction<void(const FString&, bool)> Handler) = 0;
 };
 
 /**

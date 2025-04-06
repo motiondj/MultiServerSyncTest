@@ -20,6 +20,16 @@ enum class ENetworkMessageType : uint8
     FrameSync = 3,    // 프레임 동기화 메시지
     Command = 4,      // 일반 명령 메시지
     Data = 5,         // 데이터 전송 메시지
+
+    // 추가: 마스터-슬레이브 프로토콜 관련 메시지
+    MasterAnnouncement = 10,  // 마스터가 자신의 상태를 알림
+    MasterQuery = 11,         // 마스터 정보 요청
+    MasterResponse = 12,      // 마스터 정보 응답
+    MasterElection = 13,      // 마스터 선출 시작
+    MasterVote = 14,          // 마스터 선출 투표
+    MasterResign = 15,        // 마스터 사임 알림
+    RoleChange = 16,          // 역할 변경 알림
+
     Custom = 255      // 사용자 정의 메시지
 };
 
@@ -145,6 +155,41 @@ struct FServerEndpoint
 };
 
 /**
+ * 마스터 정보 구조체
+ * 마스터 서버에 대한 추가 정보를 저장
+ */
+struct FMasterInfo
+{
+    FString ServerId;             // 서버 고유 ID
+    FIPv4Address IPAddress;       // IP 주소
+    uint16 Port;                  // 포트 번호
+    float Priority;               // 마스터 우선순위 (높을수록 우선순위 높음)
+    double LastUpdateTime;        // 마지막 업데이트 시간
+    int32 ElectionTerm;           // 선출 기간 (선출될 때마다 증가)
+
+    FMasterInfo()
+        : Port(0)
+        , Priority(0.0f)
+        , LastUpdateTime(0.0)
+        , ElectionTerm(0)
+    {
+    }
+
+    // 두 마스터 정보가 동일한지 비교
+    bool operator==(const FMasterInfo& Other) const
+    {
+        return ServerId == Other.ServerId;
+    }
+
+    // 마스터 정보를 문자열로 변환
+    FString ToString() const
+    {
+        return FString::Printf(TEXT("Master[%s] at %s:%d (Priority: %.2f, Term: %d)"),
+            *ServerId, *IPAddress.ToString(), Port, Priority, ElectionTerm);
+    }
+};
+
+/**
  * 수신 스레드 클래스
  * 별도의 스레드에서 메시지 수신을 담당
  */
@@ -196,10 +241,18 @@ public:
     virtual bool SendMessage(const FString& EndpointId, const TArray<uint8>& Message) override;
     virtual bool BroadcastMessage(const TArray<uint8>& Message) override;
     virtual void RegisterMessageHandler(TFunction<void(const FString&, const TArray<uint8>&)> Handler) override;
-    // End INetworkManager interface
-
-    /** Discover other servers on the network */
     virtual bool DiscoverServers() override;
+
+    // 마스터-슬레이브 프로토콜 관련 메서드
+    virtual bool IsMaster() const override;
+    virtual FString GetMasterId() const override;
+    virtual bool StartMasterElection() override;
+    virtual void AnnounceMaster() override;
+    virtual void ResignMaster() override;
+    virtual FMasterInfo GetMasterInfo() const override;
+    virtual void SetMasterPriority(float Priority) override;
+    virtual void RegisterMasterChangeHandler(TFunction<void(const FString&, bool)> Handler) override;
+    // End INetworkManager interface
 
     /** Get the list of discovered servers */
     TArray<FString> GetDiscoveredServers() const;
@@ -277,6 +330,19 @@ private:
     /** 수신 스레드 작업자 */
     FNetworkReceiverWorker* ReceiverWorker;
 
+    // 마스터-슬레이브 관련 멤버 변수
+    bool bIsMaster;                       // 현재 노드가 마스터인지 여부
+    FMasterInfo CurrentMaster;            // 현재 마스터 정보
+    float MasterPriority;                 // 이 서버의 마스터 우선순위
+    bool bElectionInProgress;             // 선출 진행중 여부
+    int32 CurrentElectionTerm;            // 현재 선출 기간
+    TMap<FString, float> ElectionVotes;   // 선출 투표 결과
+    double LastMasterAnnouncementTime;    // 마지막 마스터 공지 시간
+    double LastElectionStartTime;         // 마지막 선출 시작 시간
+    TFunction<void(const FString&, bool)> MasterChangeHandler; // 마스터 변경 핸들러
+    const float MASTER_TIMEOUT_SECONDS = 5.0f;    // 마스터 타임아웃 시간
+    const float ELECTION_TIMEOUT_SECONDS = 3.0f;  // 선출 타임아웃 시간
+
     /** 소켓 초기화 */
     bool InitializeSockets();
 
@@ -304,9 +370,36 @@ private:
     void HandleDataMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
     void HandleCustomMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
 
+    // 마스터-슬레이브 메시지 처리 메서드
+    void HandleMasterAnnouncement(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleMasterQuery(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleMasterResponse(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleMasterElection(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleMasterVote(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleMasterResign(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void HandleRoleChange(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+
+    // 마스터 선출 관련 메서드
+    void SendElectionVote(const FString& CandidateId);
+    bool TryBecomeMaster();
+    void EndElection(const FString& WinnerId, int32 ElectionTerm);
+    void CheckMasterTimeout();
+    float CalculateVotePriority();
+    void UpdateMasterStatus(const FString& NewMasterId, bool bLocalServerIsMaster);
+    void SendRoleChangeNotification();
+
     /** 다음 시퀀스 번호 생성 */
     uint16 GetNextSequenceNumber();
 
     /** 이벤트 간 충분한 시간이 지났는지 확인 (속도 제한) */
     bool HasEnoughTimePassed(double& LastTime, double Interval) const;
+
+    /** 주기적인 마스터-슬레이브 프로토콜 상태 업데이트 */
+    void TickMasterSlaveProtocol();
+
+    /** 틱 델리게이트 핸들 */
+    FTSTicker::FDelegateHandle MasterSlaveTickHandle;
+
+    /** 마스터-슬레이브 프로토콜 틱 콜백 */
+    bool MasterSlaveProtocolTick(float DeltaTime);
 };
