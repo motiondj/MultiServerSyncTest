@@ -1,67 +1,150 @@
-﻿// FGlobalSettings.h
-#pragma once
-
-#include "CoreMinimal.h"
+﻿// FGlobalSettings.cpp
+#include "FGlobalSettings.h"
 #include "Serialization/Archive.h"
+#include "Misc/Guid.h"
 
-/**
- * 프로젝트 전역 설정 구조체
- * 다중 서버 환경에서 공유되는 모든 설정 정보를 포함
- */
-struct MULTISERVERSYNC_API FGlobalSettings
+FGlobalSettings::FGlobalSettings()
+    : SyncPort(7000)
+    , BroadcastInterval(2.0f)
+    , ConnectionTimeout(10)
+    , SyncIntervalMs(100)
+    , MaxTimeOffsetMs(5000)
+    , PGain(0.5f)
+    , IGain(0.01f)
+    , FilterWeight(0.5f)
+    , TargetFrameRate(60.0f)
+    , bForceFrameLock(false)
+    , MaxFrameSkew(1)
+    , MasterPriority(0.5f)
+    , bCanBeMaster(true)
+    , bForceMaster(false)
+    , SettingsVersion(1)
+    , LastUpdatedTimeMs(0)
 {
-    // 프로젝트 식별 정보
-    FString ProjectName;
-    FString ProjectVersion;
-    FGuid ProjectId;
+    ProjectId = FGuid::NewGuid();
+    ProjectName = TEXT("DefaultProject");
+    ProjectVersion = TEXT("1.0");
+    LastUpdatedBy = TEXT("System");
+}
 
-    // 네트워크 설정
-    int32 SyncPort;
-    float BroadcastInterval;
-    int32 ConnectionTimeout;
+void FGlobalSettings::Serialize(FArchive& Ar)
+{
+    Ar << ProjectName;
+    Ar << ProjectVersion;
+    Ar << ProjectId;
 
-    // 시간 동기화 설정
-    int32 SyncIntervalMs;
-    int32 MaxTimeOffsetMs;
-    float PGain;
-    float IGain;
-    float FilterWeight;
+    Ar << SyncPort;
+    Ar << BroadcastInterval;
+    Ar << ConnectionTimeout;
 
-    // 프레임 동기화 설정
-    float TargetFrameRate;
-    bool bForceFrameLock;
-    int32 MaxFrameSkew;
+    Ar << SyncIntervalMs;
+    Ar << MaxTimeOffsetMs;
+    Ar << PGain;
+    Ar << IGain;
+    Ar << FilterWeight;
 
-    // 마스터-슬레이브 설정
-    float MasterPriority;
-    bool bCanBeMaster;
-    bool bForceMaster;
+    Ar << TargetFrameRate;
+    Ar << bForceFrameLock;
+    Ar << MaxFrameSkew;
 
-    // 설정 버전 (업데이트 감지용)
-    int32 SettingsVersion;
+    Ar << MasterPriority;
+    Ar << bCanBeMaster;
+    Ar << bForceMaster;
 
-    // 마지막 업데이트 시간 및 업데이트한 서버
-    FString LastUpdatedBy;
-    int64 LastUpdatedTimeMs;
+    Ar << SettingsVersion;
+    Ar << LastUpdatedBy;
+    Ar << LastUpdatedTimeMs;
+}
 
-    // 직렬화/역직렬화 메서드
-    void Serialize(FArchive& Ar);
+bool FGlobalSettings::IsValid() const
+{
+    // 기본 유효성 검사
+    if (ProjectName.IsEmpty() || ProjectVersion.IsEmpty() || !ProjectId.IsValid())
+    {
+        return false;
+    }
 
-    // 기본 생성자
-    FGlobalSettings();
+    // 네트워크 설정 유효성 검사
+    if (SyncPort < 1024 || SyncPort > 65535 || BroadcastInterval <= 0.0f || ConnectionTimeout <= 0)
+    {
+        return false;
+    }
 
-    // 설정 유효성 검사
-    bool IsValid() const;
+    // 시간 동기화 설정 유효성 검사
+    if (SyncIntervalMs <= 0 || MaxTimeOffsetMs <= 0 || PGain <= 0.0f || IGain <= 0.0f || FilterWeight <= 0.0f || FilterWeight >= 1.0f)
+    {
+        return false;
+    }
 
-    // 두 설정 간 차이점 확인
-    bool IsDifferentFrom(const FGlobalSettings& Other) const;
+    // 프레임 동기화 설정 유효성 검사
+    if (TargetFrameRate <= 0.0f || MaxFrameSkew < 0)
+    {
+        return false;
+    }
 
-    // 설정을 문자열로 변환 (디버깅용)
-    FString ToString() const;
+    // 마스터-슬레이브 설정 유효성 검사
+    if (MasterPriority < 0.0f || MasterPriority > 1.0f)
+    {
+        return false;
+    }
 
-    // 설정 해시 생성 (빠른 비교용)
-    uint32 GetSettingsHash() const;
+    return true;
+}
 
-    // 직렬화 연산자 오버로드를 친구 함수로 선언
-    friend FArchive& operator<<(FArchive& Ar, FGlobalSettings& Settings);
-};
+bool FGlobalSettings::IsDifferentFrom(const FGlobalSettings& Other) const
+{
+    // 핵심 설정 비교
+    if (SyncPort != Other.SyncPort ||
+        BroadcastInterval != Other.BroadcastInterval ||
+        ConnectionTimeout != Other.ConnectionTimeout ||
+        SyncIntervalMs != Other.SyncIntervalMs ||
+        MaxTimeOffsetMs != Other.MaxTimeOffsetMs ||
+        PGain != Other.PGain ||
+        IGain != Other.IGain ||
+        FilterWeight != Other.FilterWeight ||
+        TargetFrameRate != Other.TargetFrameRate ||
+        bForceFrameLock != Other.bForceFrameLock ||
+        MaxFrameSkew != Other.MaxFrameSkew ||
+        MasterPriority != Other.MasterPriority ||
+        bCanBeMaster != Other.bCanBeMaster ||
+        bForceMaster != Other.bForceMaster)
+    {
+        return true;
+    }
+
+    // 프로젝트 식별 정보 비교 - 프로젝트 ID는 동일해야 함
+    if (ProjectId != Other.ProjectId)
+    {
+        return true;
+    }
+
+    // 버전이나 이름이 다른 경우는 무시함 (핵심 설정이 아님)
+
+    return false;
+}
+
+FString FGlobalSettings::ToString() const
+{
+    return FString::Printf(TEXT("Project: %s (v%s), SyncPort: %d, TargetFPS: %.1f, MasterPriority: %.2f, SettingsVersion: %d"),
+        *ProjectName, *ProjectVersion, SyncPort, TargetFrameRate, MasterPriority, SettingsVersion);
+}
+
+uint32 FGlobalSettings::GetSettingsHash() const
+{
+    // 간단한 해시 계산 - 실제 구현에서는 더 복잡한 해싱 알고리즘 사용 가능
+    uint32 Hash = FCrc::MemCrc32(&SyncPort, sizeof(SyncPort));
+    Hash = FCrc::StrCrc32(*ProjectName, Hash);
+    Hash = FCrc::StrCrc32(*ProjectVersion, Hash);
+    Hash = FCrc::MemCrc32(&SyncIntervalMs, sizeof(SyncIntervalMs), Hash);
+    Hash = FCrc::MemCrc32(&TargetFrameRate, sizeof(TargetFrameRate), Hash);
+    Hash = FCrc::MemCrc32(&MasterPriority, sizeof(MasterPriority), Hash);
+    Hash = FCrc::MemCrc32(&SettingsVersion, sizeof(SettingsVersion), Hash);
+
+    return Hash;
+}
+
+FArchive& operator<<(FArchive& Ar, FGlobalSettings& Settings)
+{
+    Settings.Serialize(Ar);
+    return Ar;
+}

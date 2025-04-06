@@ -39,7 +39,7 @@ bool FSettingsManager::Initialize()
     CurrentSettings.LastUpdatedTimeMs = FDateTime::Now().ToUnixTimestamp() * 1000;
 
     // 로컬 머신의 고유 ID를 포함
-    FString MachineId = FPlatformMisc::GetMachineId().ToString();
+    FString MachineId = FPlatformMisc::GetLoginId();
     FString HostName = FPlatformProcess::ComputerName();
     CurrentSettings.ProjectName = FString::Printf(TEXT("%s_%s"), *FApp::GetProjectName(), *HostName);
 
@@ -138,17 +138,7 @@ bool FSettingsManager::SaveSettingsToFile(const FString& FilePath)
     }
 
     // 설정 직렬화
-    TArray<uint8> FSettingsManager::SerializeSettings() const
-    {
-        TArray<uint8> Result;
-        FMemoryWriter MemWriter(Result);
-
-        // 설정 직렬화 - const 제거를 위해 복사본 사용
-        FGlobalSettings SettingsCopy = CurrentSettings;
-        MemWriter << SettingsCopy;
-
-        return Result;
-    }
+    TArray<uint8> SerializedData = SerializeSettings();
 
     // 파일 저장
     bool bSuccess = FFileHelper::SaveArrayToFile(SerializedData, *PathToUse);
@@ -220,7 +210,8 @@ TArray<uint8> FSettingsManager::SerializeSettings() const
     FMemoryWriter MemWriter(Result);
 
     // 설정 직렬화
-    MemWriter << CurrentSettings;
+    FGlobalSettings SettingsCopy = CurrentSettings;
+    MemWriter << SettingsCopy;
 
     return Result;
 }
@@ -608,63 +599,6 @@ template bool FSettingsManager::UpdateSettingValue<FString>(const FString& Setti
 template bool FSettingsManager::UpdateSettingValue<int32>(const FString& SettingName, const int32& Value);
 template bool FSettingsManager::UpdateSettingValue<float>(const FString& SettingName, const float& Value);
 template bool FSettingsManager::UpdateSettingValue<bool>(const FString& SettingName, const bool& Value);
-
-TSharedPtr<FSettingsManager> FSyncFrameworkManager::GetSettingsManager() const
-{
-    return SettingsManager;
-}
-
-// Initialize 메서드에 설정 관리자와 네트워크 관리자 연결 로직 추가
-// 네트워크 관리자와 설정 관리자 초기화 후 아래 코드 실행
-
-// 설정 관리자에 네트워크 기능 제공
-if (NetworkManager.IsValid() && SettingsManager.IsValid())
-{
-    // 원래 구현에 추가
-    FNetworkManager* NetworkManagerImpl = static_cast<FNetworkManager*>(NetworkManager.Get());
-
-    // 설정 브로드캐스트 메서드 오버라이드
-    SettingsManager->BroadcastSettings = [this]()
-        {
-            if (NetworkManager.IsValid() && SettingsManager.IsValid())
-            {
-                FNetworkManager* NetMgr = static_cast<FNetworkManager*>(NetworkManager.Get());
-                TArray<uint8> SettingsData = SettingsManager->SerializeSettings();
-                NetMgr->BroadcastSettingsMessage(SettingsData, ENetworkMessageType::SettingsSync);
-            }
-        };
-
-    // 설정 요청 메서드 오버라이드
-    SettingsManager->RequestSettingsFromMaster = [this]()
-        {
-            if (NetworkManager.IsValid() && SettingsManager.IsValid())
-            {
-                FNetworkManager* NetMgr = static_cast<FNetworkManager*>(NetworkManager.Get());
-
-                // 요청 메시지 생성
-                FString RequestId = FString::Printf(TEXT("%s:%lld"),
-                    *FPlatformProcess::ComputerName(),
-                    FDateTime::Now().ToUnixTimestamp());
-
-                // RequestId를 바이트 배열로 변환
-                TArray<uint8> RequestData;
-                RequestData.SetNum(RequestId.Len() * sizeof(TCHAR));
-                FMemory::Memcpy(RequestData.GetData(), *RequestId, RequestId.Len() * sizeof(TCHAR));
-
-                // 마스터 서버가 있는 경우 해당 서버에 직접 요청
-                FString MasterId = NetMgr->GetMasterId();
-                if (!MasterId.IsEmpty())
-                {
-                    NetMgr->SendSettingsToServer(MasterId, RequestData, ENetworkMessageType::SettingsRequest);
-                }
-                else
-                {
-                    // 마스터를 모르는 경우 브로드캐스트
-                    NetMgr->BroadcastSettingsMessage(RequestData, ENetworkMessageType::SettingsRequest);
-                }
-            }
-        };
-}
 
 void FSettingsManager::UpdateSettingsSyncStatus()
 {

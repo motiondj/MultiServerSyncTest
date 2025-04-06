@@ -123,11 +123,6 @@ bool FSyncFrameworkManager::Initialize()
         );
     }
 
-    bIsInitialized = true;
-    MSYNC_LOG_INFO(TEXT("FSyncFrameworkManager initialized successfully"));
-
-    return true;
-
     // 마스터 변경 핸들러 등록 - 마스터가 변경될 때 설정 관리 로직 실행
     if (NetworkManager.IsValid() && SettingsManager.IsValid())
     {
@@ -159,22 +154,6 @@ bool FSyncFrameworkManager::Initialize()
     // 틱 델리게이트 등록
     FTickerDelegate TickDelegate = FTickerDelegate::CreateRaw(this, &FSyncFrameworkManager::TickHandler);
     TickDelegateHandle = FTSTicker::GetCoreTicker().AddTicker(TickDelegate, 1.0f); // 1초마다 틱
-
-    // Shutdown 메서드에 다음 코드 추가
-    // 틱 델리게이트 등록 해제
-    FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
-
-    // TickHandler 구현
-    bool FSyncFrameworkManager::TickHandler(float DeltaTime)
-    {
-        // 설정 동기화 상태 업데이트
-        if (SettingsManager.IsValid())
-        {
-            SettingsManager->UpdateSettingsSyncStatus();
-        }
-
-        return true; // 계속 틱 수신
-    }
 
     // 설정 변경 이벤트 핸들러를 등록하여 모듈 간 설정 동기화
     if (SettingsManager.IsValid())
@@ -232,6 +211,11 @@ bool FSyncFrameworkManager::Initialize()
             NetworkManagerImpl->SetMasterPriority(InitialSettings.MasterPriority);
         }
     }
+
+    bIsInitialized = true;
+    MSYNC_LOG_INFO(TEXT("FSyncFrameworkManager initialized successfully"));
+
+    return true;
 }
 
 void FSyncFrameworkManager::Shutdown()
@@ -242,6 +226,9 @@ void FSyncFrameworkManager::Shutdown()
     }
 
     MSYNC_LOG_INFO(TEXT("Shutting down FSyncFrameworkManager"));
+
+    // 틱 델리게이트 등록 해제
+    FTSTicker::GetCoreTicker().RemoveTicker(TickDelegateHandle);
 
     // Shutdown frame sync controller
     if (FrameSyncController.IsValid())
@@ -262,12 +249,6 @@ void FSyncFrameworkManager::Shutdown()
     {
         SettingsManager->Shutdown();
         SettingsManager.Reset();
-    }
-
-    // GetSettingsManager 메서드 구현 추가
-    TSharedPtr<FSettingsManager> FSyncFrameworkManager::GetSettingsManager() const
-    {
-        return SettingsManager;
     }
 
     // Shutdown network manager
@@ -291,6 +272,17 @@ void FSyncFrameworkManager::Shutdown()
     MSYNC_LOG_INFO(TEXT("FSyncFrameworkManager shutdown completed"));
 }
 
+bool FSyncFrameworkManager::TickHandler(float DeltaTime)
+{
+    // 설정 동기화 상태 업데이트
+    if (SettingsManager.IsValid())
+    {
+        SettingsManager->UpdateSettingsSyncStatus();
+    }
+
+    return true; // 계속 틱 수신
+}
+
 TSharedPtr<IEnvironmentDetector> FSyncFrameworkManager::GetEnvironmentDetector() const
 {
     return EnvironmentDetector;
@@ -309,4 +301,9 @@ TSharedPtr<ITimeSync> FSyncFrameworkManager::GetTimeSync() const
 TSharedPtr<IFrameSyncController> FSyncFrameworkManager::GetFrameSyncController() const
 {
     return FrameSyncController;
+}
+
+TSharedPtr<FSettingsManager> FSyncFrameworkManager::GetSettingsManager() const
+{
+    return SettingsManager;
 }
