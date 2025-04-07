@@ -255,3 +255,242 @@ void FNetworkLatencyStats::AnalyzeTrend()
     UE_LOG(LogMultiServerSync, Verbose, TEXT("Network trend analysis: Short-term: %.2f ms, Long-term: %.2f ms, Volatility: %.2f ms"),
         TrendAnalysis.ShortTermTrend, TrendAnalysis.LongTermTrend, TrendAnalysis.Volatility);
 }
+
+// 네트워크 품질 평가 수행
+FNetworkQualityAssessment FNetworkLatencyStats::AssessNetworkQuality()
+{
+    // 이미 현재 품질이 계산되어 있으면 바로 반환
+    if (CurrentQuality.QualityScore > 0 &&
+        FPlatformTime::Seconds() - LastQualityAssessmentTime < QualityAssessmentInterval)
+    {
+        return CurrentQuality;
+    }
+
+    // 새 품질 평가 생성
+    FNetworkQualityAssessment NewQuality;
+
+    // 샘플 수가 너무 적으면 낮은 신뢰도 표시
+    if (SampleCount < 10)
+    {
+        NewQuality.QualityLevel = 0;
+        NewQuality.QualityString = TEXT("Insufficient Data");
+        NewQuality.DetailedDescription = TEXT("Not enough samples to evaluate network quality reliably.");
+        NewQuality.Recommendations.Add(TEXT("Continue latency measurement to gather more data."));
+        return NewQuality;
+    }
+
+    // 패킷 손실율 계산
+    double PacketLossRate = 0.0;
+    if (SampleCount + LostPackets > 0)
+    {
+        PacketLossRate = static_cast<double>(LostPackets) / (SampleCount + LostPackets);
+    }
+
+    // 각 지표별 개별 품질 점수 계산 (간소화된 버전)
+    int32 LatencyScore = 0;
+    int32 JitterScore = 0;
+    int32 PacketLossScore = 0;
+    int32 StabilityScore = 0;
+
+    // 지연 시간 점수
+    if (AvgRTT <= 20.0)
+        LatencyScore = 100;
+    else if (AvgRTT >= HighLatencyThreshold)
+        LatencyScore = 0;
+    else
+    {
+        double NormalizedRTT = (AvgRTT - 20.0) / (HighLatencyThreshold - 20.0);
+        LatencyScore = FMath::Clamp<int32>(FMath::RoundToInt(100.0 * (1.0 - NormalizedRTT * NormalizedRTT)), 0, 100);
+    }
+
+    // 지터 점수
+    if (Jitter <= 5.0)
+        JitterScore = 100;
+    else if (Jitter >= HighJitterThreshold)
+        JitterScore = 0;
+    else
+    {
+        double NormalizedJitter = (Jitter - 5.0) / (HighJitterThreshold - 5.0);
+        JitterScore = FMath::Clamp<int32>(FMath::RoundToInt(100.0 * (1.0 - NormalizedJitter)), 0, 100);
+    }
+
+    // 패킷 손실 점수
+    const double LowLossThreshold = 0.001;  // 0.1%
+    if (PacketLossRate <= LowLossThreshold)
+        PacketLossScore = 100;
+    else if (PacketLossRate >= HighPacketLossThreshold)
+        PacketLossScore = 0;
+    else
+    {
+        double NormalizedLoss = (PacketLossRate - LowLossThreshold) / (HighPacketLossThreshold - LowLossThreshold);
+        PacketLossScore = FMath::Clamp<int32>(FMath::RoundToInt(100.0 * (1.0 - pow(NormalizedLoss, 0.7))), 0, 100);
+    }
+
+    // 안정성 점수
+    double VolatilityScore = 100.0;
+    if (TrendAnalysis.Volatility > 0.0)
+    {
+        VolatilityScore = FMath::Clamp(100.0 - (TrendAnalysis.Volatility / 50.0) * 100.0, 0.0, 100.0);
+    }
+
+    double TrendScore = 50.0;
+    if (TrendAnalysis.LongTermTrend < 0.0)
+    {
+        TrendScore = 50.0 + FMath::Min(fabs(TrendAnalysis.LongTermTrend) / 10.0 * 50.0, 50.0);
+    }
+    else if (TrendAnalysis.LongTermTrend > 0.0)
+    {
+        TrendScore = 50.0 - FMath::Min(TrendAnalysis.LongTermTrend / 10.0 * 50.0, 50.0);
+    }
+
+    StabilityScore = FMath::Clamp(FMath::RoundToInt(VolatilityScore * 0.7 + TrendScore * 0.3), 0, 100);
+
+    // 품질 평가 구성
+    NewQuality.LatencyScore = LatencyScore;
+    NewQuality.JitterScore = JitterScore;
+    NewQuality.PacketLossScore = PacketLossScore;
+    NewQuality.StabilityScore = StabilityScore;
+
+    // 종합 품질 점수 계산
+    NewQuality.QualityScore = static_cast<int32>(
+        LatencyScore * 0.4f +     // 지연 시간 40% 비중
+        JitterScore * 0.3f +      // 지터 30% 비중
+        PacketLossScore * 0.2f +  // 패킷 손실 20% 비중
+        StabilityScore * 0.1f     // 안정성 10% 비중
+        );
+
+    // 품질 레벨 결정
+    if (NewQuality.QualityScore >= 80)
+    {
+        NewQuality.QualityLevel = 3;
+        NewQuality.QualityString = TEXT("Excellent");
+    }
+    else if (NewQuality.QualityScore >= 60)
+    {
+        NewQuality.QualityLevel = 2;
+        NewQuality.QualityString = TEXT("Good");
+    }
+    else if (NewQuality.QualityScore >= 40)
+    {
+        NewQuality.QualityLevel = 1;
+        NewQuality.QualityString = TEXT("Fair");
+    }
+    else
+    {
+        NewQuality.QualityLevel = 0;
+        NewQuality.QualityString = TEXT("Poor");
+    }
+
+    // 상세 설명 및 권장 사항 추가
+    NewQuality.DetailedDescription = FString::Printf(
+        TEXT("Network quality is %s (%d/100). RTT: %.2f ms, Jitter: %.2f ms, Packet Loss: %.2f%%."),
+        *NewQuality.QualityString,
+        NewQuality.QualityScore,
+        AvgRTT,
+        Jitter,
+        PacketLossRate * 100.0
+    );
+
+    // 품질 변화 추세 계산
+    if (QualityHistory.Num() > 0)
+    {
+        int32 PrevScore = QualityHistory.Last().QualityScore;
+        NewQuality.QualityChangeTrend = static_cast<float>(NewQuality.QualityScore - PrevScore);
+    }
+
+    // 품질 평가 결과 저장
+    CurrentQuality = NewQuality;
+    LastQualityAssessmentTime = FPlatformTime::Seconds();
+
+    return NewQuality;
+}
+
+// 네트워크 상태 변화 감지 (계속)
+ENetworkEventType FNetworkLatencyStats::DetectStateChange(const FNetworkQualityAssessment& NewQuality, const FNetworkQualityAssessment& PreviousQuality)
+{
+    // 품질 점수 변화 감지
+    int32 ScoreDifference = NewQuality.QualityScore - PreviousQuality.QualityScore;
+
+    // 변화가 임계값보다 작으면 이벤트 없음
+    if (FMath::Abs(ScoreDifference) < StateChangeThreshold)
+    {
+        // 특별한 지표 확인 (이상값 감지)
+        if (NewQuality.LatencyScore < 30 && PreviousQuality.LatencyScore >= 30)
+        {
+            return ENetworkEventType::HighLatency;
+        }
+
+        if (NewQuality.JitterScore < 30 && PreviousQuality.JitterScore >= 30)
+        {
+            return ENetworkEventType::HighJitter;
+        }
+
+        if (NewQuality.PacketLossScore < 30 && PreviousQuality.PacketLossScore >= 30)
+        {
+            return ENetworkEventType::HighPacketLoss;
+        }
+
+        return ENetworkEventType::None;
+    }
+
+    // 품질 개선
+    if (ScoreDifference > 0)
+    {
+        // 매우 큰 개선이고 품질이 좋으면 안정화로 판단
+        if (ScoreDifference > StateChangeThreshold * 2 && NewQuality.QualityScore >= 60)
+        {
+            return ENetworkEventType::Stabilized;
+        }
+
+        return ENetworkEventType::QualityImproved;
+    }
+    // 품질 저하
+    else
+    {
+        // 심각한 품질 저하인지 확인
+        if (ScoreDifference < -StateChangeThreshold * 2)
+        {
+            // 품질이 매우 나쁘면 연결 문제로 판단
+            if (NewQuality.QualityScore < 20)
+            {
+                return ENetworkEventType::ConnectionLost;
+            }
+
+            return ENetworkEventType::QualityDegraded;
+        }
+
+        return ENetworkEventType::QualityDegraded;
+    }
+}
+
+// 이벤트 추가 및 관리
+void FNetworkLatencyStats::AddNetworkEvent(ENetworkEventType EventType, double Timestamp)
+{
+    // 이벤트가 없으면 추가하지 않음
+    if (EventType == ENetworkEventType::None)
+        return;
+
+    // 이벤트 기록에 추가
+    RecentEvents.Add(EventType);
+
+    // 최대 이벤트 기록 크기 유지
+    while (RecentEvents.Num() > MaxEventHistory)
+    {
+        RecentEvents.RemoveAt(0);
+    }
+
+    // 현재 품질 이벤트 정보 업데이트
+    CurrentQuality.LatestEvent = EventType;
+    CurrentQuality.EventTimestamp = Timestamp;
+}
+
+// 가장 최근 이벤트 얻기
+ENetworkEventType FNetworkLatencyStats::GetLatestEvent() const
+{
+    if (RecentEvents.Num() > 0)
+    {
+        return RecentEvents.Last();
+    }
+
+    return ENetworkEventType::None;
+}

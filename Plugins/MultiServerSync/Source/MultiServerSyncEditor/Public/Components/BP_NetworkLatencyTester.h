@@ -98,6 +98,61 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Network Latency|Outliers")
     void SetOutlierFiltering(bool bEnable);
 
+    // 상세 품질 점수
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Quality")
+    int32 QualityScore;
+
+    // 개별 지표 점수
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Quality")
+    int32 LatencyScore;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Quality")
+    int32 JitterScore;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Quality")
+    int32 PacketLossScore;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Quality")
+    int32 StabilityScore;
+
+    // 품질 추세 (-100 ~ +100, 양수: 개선, 음수: 악화)
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Quality")
+    float QualityTrend;
+
+    // 상세 설명
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Quality")
+    FString DetailedDescription;
+
+    // 권장 사항
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Quality")
+    TArray<FString> Recommendations;
+
+    // 네트워크 이벤트
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Events")
+    int32 LatestEventType;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Events")
+    FString LatestEventDescription;
+
+    // 품질 평가 설정
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency|Settings")
+    bool bEnableStateMonitoring;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency|Settings", meta = (ClampMin = "1.0", ClampMax = "60.0"))
+    float QualityAssessmentInterval;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency|Settings", meta = (ClampMin = "5.0", ClampMax = "50.0"))
+    float StateChangeThreshold;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency|Settings", meta = (ClampMin = "50.0", ClampMax = "500.0"))
+    float LatencyThreshold;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency|Settings", meta = (ClampMin = "10.0", ClampMax = "200.0"))
+    float JitterThreshold;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency|Settings", meta = (ClampMin = "0.01", ClampMax = "0.5", Units = "%"))
+    float PacketLossThreshold;
+
 protected:
     // 컴포넌트 초기화 시 호출
     virtual void BeginPlay() override;
@@ -142,4 +197,24 @@ public:
     // 네트워크 품질 레벨 가져오기 (0-3)
     UFUNCTION(BlueprintPure, Category = "Network Latency")
     int32 GetNetworkQualityLevel() const { return QualityLevel; }
+
+    // 품질 평가 설정 적용
+    UFUNCTION(BlueprintCallable, Category = "Network Latency|Quality")
+    void ApplyQualitySettings();
+
+    // 네트워크 품질 상세 정보 출력
+    UFUNCTION(BlueprintCallable, Category = "Network Latency|Quality")
+    void PrintQualityDetails();
+
+    // 이벤트 모니터링 활성화/비활성화
+    UFUNCTION(BlueprintCallable, Category = "Network Latency|Events")
+    void SetEventMonitoring(bool bEnable);
+
+    // 품질 평가 간격 설정
+    UFUNCTION(BlueprintCallable, Category = "Network Latency|Settings")
+    void SetQualityInterval(float IntervalSeconds);
+
+    // 성능 임계값 설정
+    UFUNCTION(BlueprintCallable, Category = "Network Latency|Settings")
+    void SetPerformanceThresholds(float NewLatencyThreshold, float NewJitterThreshold, float NewPacketLossThreshold);
 };

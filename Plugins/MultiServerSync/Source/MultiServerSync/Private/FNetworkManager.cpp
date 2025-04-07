@@ -427,6 +427,13 @@ void FNetworkManager::Shutdown()
         FTSTicker::GetCoreTicker().RemoveTicker(PingTimeoutCheckHandle);
         PingTimeoutCheckHandle.Reset();
     }
+
+    // 품질 평가 틱 해제 (추가)
+    if (QualityAssessmentTickHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(QualityAssessmentTickHandle);
+        QualityAssessmentTickHandle.Reset();
+    }
 }
 
 bool FNetworkManager::SendMessage(const FString& EndpointId, const TArray<uint8>& Message)
@@ -2719,4 +2726,450 @@ bool FNetworkManager::GetNetworkTrendAnalysis(const FIPv4Endpoint& ServerEndpoin
     OutTrendAnalysis = Stats.GetTrendAnalysis();
 
     return true;
+}
+
+FNetworkQualityAssessment FNetworkManager::EvaluateNetworkQualityDetailed(const FIPv4Endpoint& ServerEndpoint) const
+{
+    FNetworkQualityAssessment Result;
+    FString ServerID = ServerEndpoint.ToString();
+
+    // 서버 통계가 없으면 기본 품질 평가 반환
+    if (!ServerLatencyStats.Contains(ServerID))
+    {
+        Result.QualityLevel = 0;
+        Result.QualityString = TEXT("Unknown");
+        Result.DetailedDescription = TEXT("No network statistics available for this server.");
+        Result.Recommendations.Add(TEXT("Start latency measurement to gather network statistics."));
+        return Result;
+    }
+
+    const FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+
+    // 샘플 수가 너무 적으면 낮은 신뢰도 표시
+    if (Stats.SampleCount < 10)
+    {
+        Result.QualityLevel = 0;
+        Result.QualityString = TEXT("Insufficient Data");
+        Result.DetailedDescription = TEXT("Not enough samples to evaluate network quality reliably.");
+        Result.Recommendations.Add(TEXT("Continue latency measurement to gather more data."));
+        return Result;
+    }
+
+    // 성능 임계값 가져오기
+    double LatencyThreshold = Stats.HighLatencyThreshold;
+    double JitterThreshold = Stats.HighJitterThreshold;
+    double PacketLossThreshold = Stats.HighPacketLossThreshold;
+
+    // 패킷 손실율 계산
+    double PacketLossRate = 0.0;
+    if (Stats.SampleCount + Stats.LostPackets > 0)
+    {
+        PacketLossRate = static_cast<double>(Stats.LostPackets) / (Stats.SampleCount + Stats.LostPackets);
+    }
+
+    // 각 지표별 점수 계산
+    Result.LatencyScore = CalculateLatencyScore(Stats.AvgRTT, LatencyThreshold);
+    Result.JitterScore = CalculateJitterScore(Stats.Jitter, JitterThreshold);
+    Result.PacketLossScore = CalculatePacketLossScore(PacketLossRate, PacketLossThreshold);
+    Result.StabilityScore = CalculateStabilityScore(Stats.TrendAnalysis);
+
+    // 종합 점수 계산 (가중치 적용)
+    Result.QualityScore = static_cast<int32>(
+        Result.LatencyScore * 0.4f +    // 지연 시간 40% 비중
+        Result.JitterScore * 0.3f +     // 지터 30% 비중
+        Result.PacketLossScore * 0.2f + // 패킷 손실 20% 비중
+        Result.StabilityScore * 0.1f    // 안정성 10% 비중
+        );
+
+    // 품질 레벨 결정
+    if (Result.QualityScore >= 80)
+    {
+        Result.QualityLevel = 3;
+        Result.QualityString = TEXT("Excellent");
+    }
+    else if (Result.QualityScore >= 60)
+    {
+        Result.QualityLevel = 2;
+        Result.QualityString = TEXT("Good");
+    }
+    else if (Result.QualityScore >= 40)
+    {
+        Result.QualityLevel = 1;
+        Result.QualityString = TEXT("Fair");
+    }
+    else
+    {
+        Result.QualityLevel = 0;
+        Result.QualityString = TEXT("Poor");
+    }
+
+    // 상세 설명 생성
+    Result.DetailedDescription = FString::Printf(
+        TEXT("Network quality is %s (%d/100). RTT: %.2f ms, Jitter: %.2f ms, Packet Loss: %.2f%%."),
+        *Result.QualityString,
+        Result.QualityScore,
+        Stats.AvgRTT,
+        Stats.Jitter,
+        PacketLossRate * 100.0
+    );
+
+    // 추세 분석 정보 추가
+    if (Stats.TrendAnalysis.ShortTermTrend > 1.0)
+    {
+        Result.DetailedDescription += TEXT(" Network quality is degrading.");
+        Result.QualityChangeTrend = -1.0f;
+    }
+    else if (Stats.TrendAnalysis.ShortTermTrend < -1.0)
+    {
+        Result.DetailedDescription += TEXT(" Network quality is improving.");
+        Result.QualityChangeTrend = 1.0f;
+    }
+    else
+    {
+        Result.DetailedDescription += TEXT(" Network quality is stable.");
+        Result.QualityChangeTrend = 0.0f;
+    }
+
+    // 권장 사항 생성
+    if (Result.LatencyScore < 50)
+    {
+        Result.Recommendations.Add(TEXT("High latency detected. Consider reducing network load or connecting to a closer server."));
+    }
+
+    if (Result.JitterScore < 50)
+    {
+        Result.Recommendations.Add(TEXT("High jitter detected. Check for network congestion or interface issues."));
+    }
+
+    if (Result.PacketLossScore < 50)
+    {
+        Result.Recommendations.Add(TEXT("Significant packet loss detected. Check network connectivity and signal quality."));
+    }
+
+    // 이벤트 정보 추가 (통계에 있는 경우)
+    if (Stats.CurrentQuality.LatestEvent != ENetworkEventType::None)
+    {
+        Result.LatestEvent = Stats.CurrentQuality.LatestEvent;
+        Result.EventTimestamp = Stats.CurrentQuality.EventTimestamp;
+    }
+
+    return Result;
+}
+
+// 네트워크 상태 변화 이벤트 핸들러 등록
+void FNetworkManager::RegisterNetworkStateChangeHandler(TFunction<void(const FIPv4Endpoint&, ENetworkEventType, const FNetworkQualityAssessment&)> Handler)
+{
+    NetworkStateChangeHandler = Handler;
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Network state change handler registered"));
+}
+
+// 네트워크 상태 변화 임계값 설정
+void FNetworkManager::SetNetworkStateChangeThreshold(const FIPv4Endpoint& ServerEndpoint, double Threshold)
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (ServerLatencyStats.Contains(ServerID))
+    {
+        FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+        Stats.StateChangeThreshold = FMath::Max(5.0, Threshold);  // 최소 5점 이상의 변화
+
+        UE_LOG(LogMultiServerSync, Display, TEXT("Network state change threshold for %s set to %.2f"),
+            *ServerID, Stats.StateChangeThreshold);
+    }
+    else
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Cannot set network state change threshold: No statistics for server %s"),
+            *ServerID);
+    }
+}
+
+// 네트워크 성능 임계값 설정
+void FNetworkManager::SetNetworkPerformanceThresholds(const FIPv4Endpoint& ServerEndpoint,
+    double LatencyThreshold,
+    double JitterThreshold,
+    double PacketLossThreshold)
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (ServerLatencyStats.Contains(ServerID))
+    {
+        FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+        Stats.SetPerformanceThresholds(LatencyThreshold, JitterThreshold, PacketLossThreshold);
+
+        UE_LOG(LogMultiServerSync, Display, TEXT("Network performance thresholds for %s set to: Latency=%.2f ms, Jitter=%.2f ms, Loss=%.2f%%"),
+            *ServerID, Stats.HighLatencyThreshold, Stats.HighJitterThreshold, Stats.HighPacketLossThreshold * 100.0);
+    }
+    else
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Cannot set network performance thresholds: No statistics for server %s"),
+            *ServerID);
+    }
+}
+
+// 품질 평가 간격 설정
+void FNetworkManager::SetQualityAssessmentInterval(const FIPv4Endpoint& ServerEndpoint, double IntervalSeconds)
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (ServerLatencyStats.Contains(ServerID))
+    {
+        FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+        Stats.SetQualityAssessmentInterval(IntervalSeconds);
+
+        UE_LOG(LogMultiServerSync, Display, TEXT("Quality assessment interval for %s set to %.2f seconds"),
+            *ServerID, Stats.QualityAssessmentInterval);
+    }
+    else
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Cannot set quality assessment interval: No statistics for server %s"),
+            *ServerID);
+    }
+}
+
+// 네트워크 상태 변화 모니터링 활성화/비활성화
+void FNetworkManager::SetNetworkStateMonitoring(const FIPv4Endpoint& ServerEndpoint, bool bEnable)
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (ServerLatencyStats.Contains(ServerID))
+    {
+        FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+        Stats.bMonitorStateChanges = bEnable;
+
+        UE_LOG(LogMultiServerSync, Display, TEXT("Network state monitoring for %s %s"),
+            *ServerID, bEnable ? TEXT("enabled") : TEXT("disabled"));
+    }
+    else
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Cannot set network state monitoring: No statistics for server %s"),
+            *ServerID);
+    }
+}
+
+// 네트워크 이벤트 기록 가져오기
+bool FNetworkManager::GetNetworkEventHistory(const FIPv4Endpoint& ServerEndpoint, TArray<ENetworkEventType>& OutEvents) const
+{
+    FString ServerID = ServerEndpoint.ToString();
+    OutEvents.Empty();
+
+    if (!ServerLatencyStats.Contains(ServerID))
+    {
+        return false;
+    }
+
+    const FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+    OutEvents = Stats.RecentEvents;
+
+    return true;
+}
+
+// 지연 시간 점수 계산 (0-100)
+int32 FNetworkManager::CalculateLatencyScore(double RTT, double HighLatencyThreshold) const
+{
+    if (RTT <= 0.0)
+        return 100;
+
+    // RTT가 낮을수록 높은 점수 (비선형 매핑)
+    // 20ms 이하면 100점
+    // 임계값 이상이면 0점
+
+    if (RTT <= 20.0)
+        return 100;
+
+    if (RTT >= HighLatencyThreshold)
+        return 0;
+
+    // 비선형 점수 계산 (점수가 더 빨리 떨어지도록)
+    double NormalizedRTT = (RTT - 20.0) / (HighLatencyThreshold - 20.0);
+    double Score = 100.0 * (1.0 - NormalizedRTT * NormalizedRTT);
+
+    return FMath::Clamp<int32>(FMath::RoundToInt(Score), 0, 100);
+}
+
+// 지터 점수 계산 (0-100)
+int32 FNetworkManager::CalculateJitterScore(double Jitter, double HighJitterThreshold) const
+{
+    if (Jitter <= 0.0)
+        return 100;
+
+    // 지터가 낮을수록 높은 점수
+    // 5ms 이하면 100점
+    // 임계값 이상이면 0점
+
+    if (Jitter <= 5.0)
+        return 100;
+
+    if (Jitter >= HighJitterThreshold)
+        return 0;
+
+    // 선형 점수 계산
+    double NormalizedJitter = (Jitter - 5.0) / (HighJitterThreshold - 5.0);
+    double Score = 100.0 * (1.0 - NormalizedJitter);
+
+    return FMath::Clamp<int32>(FMath::RoundToInt(Score), 0, 100);
+}
+
+// 패킷 손실 점수 계산 (0-100)
+int32 FNetworkManager::CalculatePacketLossScore(double LossRate, double HighPacketLossThreshold) const
+{
+    if (LossRate <= 0.0)
+        return 100;
+
+    // 패킷 손실이 낮을수록 높은 점수
+    // 0.1% 이하면 100점
+    // 임계값 이상이면 0점
+
+    const double LowLossThreshold = 0.001;  // 0.1%
+
+    if (LossRate <= LowLossThreshold)
+        return 100;
+
+    if (LossRate >= HighPacketLossThreshold)
+        return 0;
+
+    // 비선형 점수 계산 (손실이 조금만 있어도 점수가 많이 떨어지도록)
+    double NormalizedLoss = (LossRate - LowLossThreshold) / (HighPacketLossThreshold - LowLossThreshold);
+    double Score = 100.0 * (1.0 - pow(NormalizedLoss, 0.7));
+
+    return FMath::Clamp<int32>(FMath::RoundToInt(Score), 0, 100);
+}
+
+// 안정성 점수 계산 (0-100)
+int32 FNetworkManager::CalculateStabilityScore(const FNetworkTrendAnalysis& TrendAnalysis) const
+{
+    // 안정성 점수 계산 (추세 분석 기반)
+    // 변동성이 낮고 장기 추세가 좋을수록 높은 점수
+
+    // 변동성 점수 (변동성이 낮을수록 높은 점수)
+    double VolatilityScore = 100.0;
+    if (TrendAnalysis.Volatility > 0.0)
+    {
+        // 변동성이 5ms 이하면 최고 점수, 50ms 이상이면 최저 점수
+        VolatilityScore = FMath::Clamp(100.0 - (TrendAnalysis.Volatility / 50.0) * 100.0, 0.0, 100.0);
+    }
+
+    // 추세 점수 (추세가 좋을수록 높은 점수)
+    double TrendScore = 50.0;  // 기본값: 중립
+
+    // 장기 추세가 개선되고 있으면 점수 증가, 악화되고 있으면 점수 감소
+    if (TrendAnalysis.LongTermTrend < 0.0)  // 개선 중
+    {
+        // 최대 -10ms/s까지 고려 (그 이상은 동일하게 처리)
+        TrendScore = 50.0 + FMath::Min(fabs(TrendAnalysis.LongTermTrend) / 10.0 * 50.0, 50.0);
+    }
+    else if (TrendAnalysis.LongTermTrend > 0.0)  // 악화 중
+    {
+        // 최대 10ms/s까지 고려 (그 이상은 동일하게 처리)
+        TrendScore = 50.0 - FMath::Min(TrendAnalysis.LongTermTrend / 10.0 * 50.0, 50.0);
+    }
+
+    // 종합 안정성 점수 (변동성 70%, 추세 30%)
+    int32 StabilityScore = FMath::RoundToInt(VolatilityScore * 0.7 + TrendScore * 0.3);
+    return FMath::Clamp(StabilityScore, 0, 100);
+}
+
+// 네트워크 상태 변화 감지 및 처리
+void FNetworkManager::ProcessNetworkStateChange(const FIPv4Endpoint& ServerEndpoint, ENetworkEventType EventType, const FNetworkQualityAssessment& Quality)
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    // 통계 객체에 이벤트 기록 (있는 경우만)
+    if (ServerLatencyStats.Contains(ServerID))
+    {
+        FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+
+        // 이벤트 기록에 추가
+        Stats.AddNetworkEvent(EventType, FPlatformTime::Seconds());
+
+        // 현재 품질 정보 업데이트
+        Stats.CurrentQuality = Quality;
+        Stats.CurrentQuality.LatestEvent = EventType;
+        Stats.CurrentQuality.EventTimestamp = FPlatformTime::Seconds();
+
+        // 품질 히스토리에 추가
+        Stats.QualityHistory.Add(Quality);
+
+        // 최대 히스토리 크기 유지
+        while (Stats.QualityHistory.Num() > Stats.MaxQualityHistoryCount)
+        {
+            Stats.QualityHistory.RemoveAt(0);
+        }
+    }
+
+    // 이벤트 핸들러가 등록되어 있으면 호출
+    if (NetworkStateChangeHandler)
+    {
+        NetworkStateChangeHandler(ServerEndpoint, EventType, Quality);
+
+        UE_LOG(LogMultiServerSync, Display, TEXT("Network state change event: %s for server %s, quality: %d/100"),
+            *FNetworkQualityAssessment::EventTypeToString(EventType), *ServerID, Quality.QualityScore);
+    }
+}
+
+// 주기적인 품질 평가 수행
+bool FNetworkManager::CheckQualityAssessments(float DeltaTime)
+{
+    double CurrentTime = FPlatformTime::Seconds();
+
+    // 서버별로 품질 평가 시간 확인
+    for (auto& Pair : ServerLatencyStats)
+    {
+        FString ServerID = Pair.Key;
+        FNetworkLatencyStats& Stats = Pair.Value;
+
+        // 모니터링이 비활성화되었거나 충분한 샘플이 없으면 건너뜀
+        if (!Stats.bMonitorStateChanges || Stats.SampleCount < 10)
+            continue;
+
+        // 평가 간격이 지났는지 확인
+        if (CurrentTime - Stats.LastQualityAssessmentTime >= Stats.QualityAssessmentInterval)
+        {
+            // 기존 품질 평가 저장
+            FNetworkQualityAssessment PreviousQuality = Stats.CurrentQuality;
+
+            // 새로운 품질 평가 수행
+            FIPv4Endpoint ServerEndpoint;
+
+            // 서버 ID에서 엔드포인트 정보 추출
+            TArray<FString> Parts;
+            ServerID.ParseIntoArray(Parts, TEXT(":"), true);
+            if (Parts.Num() >= 2)
+            {
+                FIPv4Address IPAddress;
+                if (FIPv4Address::Parse(Parts[0], IPAddress))
+                {
+                    uint16 PortNumber = FCString::Atoi(*Parts[1]);
+                    ServerEndpoint = FIPv4Endpoint(IPAddress, Port);
+
+                    // 새 품질 평가 수행
+                    FNetworkQualityAssessment NewQuality = EvaluateNetworkQualityDetailed(ServerEndpoint);
+
+                    // 품질 변화 확인
+                    if (Stats.QualityHistory.Num() > 0)
+                    {
+                        // 이전 평가가 있으면 변화 감지
+                        ENetworkEventType StateChangeEvent = Stats.DetectStateChange(NewQuality, PreviousQuality);
+
+                        // 감지된 이벤트가 있으면 처리
+                        if (StateChangeEvent != ENetworkEventType::None)
+                        {
+                            ProcessNetworkStateChange(ServerEndpoint, StateChangeEvent, NewQuality);
+                        }
+                    }
+                    else
+                    {
+                        // 첫 번째 평가면 그냥 기록
+                        Stats.QualityHistory.Add(NewQuality);
+                        Stats.CurrentQuality = NewQuality;
+                    }
+
+                    // 평가 시간 갱신
+                    Stats.LastQualityAssessmentTime = CurrentTime;
+                }
+            }
+        }
+    }
+
+    return true;  // 계속 틱 유지
 }

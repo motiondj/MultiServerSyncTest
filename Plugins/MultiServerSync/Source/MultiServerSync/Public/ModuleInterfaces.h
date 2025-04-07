@@ -76,6 +76,30 @@ public:
     virtual int32 EvaluateNetworkQuality(const FIPv4Endpoint& ServerEndpoint) const = 0;
     virtual FString GetNetworkQualityString(const FIPv4Endpoint& ServerEndpoint) const = 0;
 
+    // 고급 네트워크 품질 평가 메서드
+    virtual FNetworkQualityAssessment EvaluateNetworkQualityDetailed(const FIPv4Endpoint& ServerEndpoint) const = 0;
+
+    // 네트워크 상태 변화 이벤트 구독 메서드 
+    virtual void RegisterNetworkStateChangeHandler(TFunction<void(const FIPv4Endpoint&, ENetworkEventType, const FNetworkQualityAssessment&)> Handler) = 0;
+
+    // 네트워크 상태 변화 임계값 설정
+    virtual void SetNetworkStateChangeThreshold(const FIPv4Endpoint& ServerEndpoint, double Threshold) = 0;
+
+    // 네트워크 성능 임계값 설정
+    virtual void SetNetworkPerformanceThresholds(const FIPv4Endpoint& ServerEndpoint,
+        double LatencyThreshold,
+        double JitterThreshold,
+        double PacketLossThreshold) = 0;
+
+    // 품질 평가 간격 설정
+    virtual void SetQualityAssessmentInterval(const FIPv4Endpoint& ServerEndpoint, double IntervalSeconds) = 0;
+
+    // 네트워크 상태 변화 모니터링 활성화/비활성화
+    virtual void SetNetworkStateMonitoring(const FIPv4Endpoint& ServerEndpoint, bool bEnable) = 0;
+
+    // 네트워크 이벤트 기록 가져오기
+    virtual bool GetNetworkEventHistory(const FIPv4Endpoint& ServerEndpoint, TArray<ENetworkEventType>& OutEvents) const = 0;
+
     // 이상치 필터링 관련 메서드 추가
     virtual void SetOutlierFiltering(const FIPv4Endpoint& ServerEndpoint, bool bEnableFiltering) = 0;
     virtual bool GetOutlierStats(const FIPv4Endpoint& ServerEndpoint, int32& OutliersDetected, double& OutlierThreshold) const = 0;

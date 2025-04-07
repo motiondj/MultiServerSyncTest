@@ -205,4 +205,76 @@ public:
      */
     UFUNCTION(BlueprintPure, Category = "MultiServerSync|TimeSync")
     static int32 GetSyncStatus();
+
+    // 약 169줄 근처, 클래스 내에 다음 함수 추가
+
+    /**
+     * 네트워크 품질을 상세하게 평가합니다.
+     * @param ServerIP 서버 IP 주소
+     * @param ServerPort 서버 포트
+     * @param QualityScore 품질 점수 (0-100)
+     * @param LatencyScore 지연 시간 점수 (0-100)
+     * @param JitterScore 지터 점수 (0-100)
+     * @param PacketLossScore 패킷 손실 점수 (0-100)
+     * @param StabilityScore 안정성 점수 (0-100)
+     * @param DetailedDescription 상세 설명
+     * @param Recommendations 권장 사항 목록
+     * @param QualityTrend 품질 변화 추세 (양수: 개선, 음수: 악화)
+     * @return 평가가 성공적으로 수행되었는지 여부
+     */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static bool EvaluateNetworkQualityDetailed(const FString& ServerIP, int32 ServerPort,
+        int32& QualityScore, int32& LatencyScore, int32& JitterScore, int32& PacketLossScore,
+        int32& StabilityScore, FString& DetailedDescription, TArray<FString>& Recommendations,
+        float& QualityTrend);
+
+    /**
+     * 네트워크 상태 변화 임계값을 설정합니다.
+     * @param ServerIP 서버 IP 주소
+     * @param ServerPort 서버 포트
+     * @param Threshold 상태 변화 감지 임계값 (기본값: 15)
+     */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static void SetNetworkStateChangeThreshold(const FString& ServerIP, int32 ServerPort, float Threshold = 15.0f);
+
+    /**
+     * 네트워크 성능 임계값을 설정합니다.
+     * @param ServerIP 서버 IP 주소
+     * @param ServerPort 서버 포트
+     * @param LatencyThreshold 높은 지연 시간 임계값 (ms)
+     * @param JitterThreshold 높은 지터 임계값 (ms)
+     * @param PacketLossThreshold 높은 패킷 손실 임계값 (0.0 ~ 1.0)
+     */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static void SetNetworkPerformanceThresholds(const FString& ServerIP, int32 ServerPort,
+        float LatencyThreshold = 150.0f, float JitterThreshold = 50.0f, float PacketLossThreshold = 0.05f);
+
+    /**
+     * 품질 평가 간격을 설정합니다.
+     * @param ServerIP 서버 IP 주소
+     * @param ServerPort 서버 포트
+     * @param IntervalSeconds 평가 간격 (초)
+     */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static void SetQualityAssessmentInterval(const FString& ServerIP, int32 ServerPort, float IntervalSeconds = 5.0f);
+
+    /**
+     * 네트워크 상태 모니터링을 활성화/비활성화합니다.
+     * @param ServerIP 서버 IP 주소
+     * @param ServerPort 서버 포트
+     * @param bEnable 활성화 여부
+     */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static void SetNetworkStateMonitoring(const FString& ServerIP, int32 ServerPort, bool bEnable = true);
+
+    /**
+     * 최근 네트워크 이벤트를 가져옵니다.
+     * @param ServerIP 서버 IP 주소
+     * @param ServerPort 서버 포트
+     * @param EventType 이벤트 유형 (0: 없음, 1: 품질 개선, 2: 품질 저하, 3: 연결 끊김, 4: 연결 복구, 5: 높은 지연 시간, 6: 높은 지터, 7: 높은 패킷 손실, 8: 네트워크 안정화)
+     * @param EventDescription 이벤트 설명
+     * @return 이벤트가 있는지 여부
+     */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static bool GetLatestNetworkEvent(const FString& ServerIP, int32 ServerPort, int32& EventType, FString& EventDescription);
 };

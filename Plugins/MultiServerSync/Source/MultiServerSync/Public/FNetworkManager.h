@@ -296,46 +296,28 @@ public:
     virtual FNetworkLatencyStats GetLatencyStats(const FIPv4Endpoint& ServerEndpoint) const override;
     virtual int32 EvaluateNetworkQuality(const FIPv4Endpoint& ServerEndpoint) const override;
     virtual FString GetNetworkQualityString(const FIPv4Endpoint& ServerEndpoint) const override;
+
+    // 이상치 필터링 관련 메서드
+    virtual void SetOutlierFiltering(const FIPv4Endpoint& ServerEndpoint, bool bEnableFiltering) override;
+    virtual bool GetOutlierStats(const FIPv4Endpoint& ServerEndpoint, int32& OutliersDetected, double& OutlierThreshold) const override;
+
+    // 시계열 관련 메서드
+    virtual void SetTimeSeriesSampleInterval(const FIPv4Endpoint& ServerEndpoint, double IntervalSeconds) override;
+    virtual bool GetTimeSeriesData(const FIPv4Endpoint& ServerEndpoint, TArray<FLatencyTimeSeriesSample>& OutTimeSeries) const override;
+    virtual bool GetNetworkTrendAnalysis(const FIPv4Endpoint& ServerEndpoint, FNetworkTrendAnalysis& OutTrendAnalysis) const override;
+
+    // 네트워크 상태 평가 고도화 관련 메서드
+    virtual FNetworkQualityAssessment EvaluateNetworkQualityDetailed(const FIPv4Endpoint& ServerEndpoint) const override;
+    virtual void RegisterNetworkStateChangeHandler(TFunction<void(const FIPv4Endpoint&, ENetworkEventType, const FNetworkQualityAssessment&)> Handler) override;
+    virtual void SetNetworkStateChangeThreshold(const FIPv4Endpoint& ServerEndpoint, double Threshold) override;
+    virtual void SetNetworkPerformanceThresholds(const FIPv4Endpoint& ServerEndpoint,
+        double LatencyThreshold,
+        double JitterThreshold,
+        double PacketLossThreshold) override;
+    virtual void SetQualityAssessmentInterval(const FIPv4Endpoint& ServerEndpoint, double IntervalSeconds) override;
+    virtual void SetNetworkStateMonitoring(const FIPv4Endpoint& ServerEndpoint, bool bEnable) override;
+    virtual bool GetNetworkEventHistory(const FIPv4Endpoint& ServerEndpoint, TArray<ENetworkEventType>& OutEvents) const override;
     // End INetworkManager interface
-
-    /**
-     * 이상치 필터링 설정을 변경합니다.
-     * @param ServerEndpoint 서버 엔드포인트
-     * @param bEnableFiltering 필터링 활성화 여부
-     */
-    void SetOutlierFiltering(const FIPv4Endpoint& ServerEndpoint, bool bEnableFiltering);
-
-    /**
-     * 이상치 통계를 가져옵니다.
-     * @param ServerEndpoint 서버 엔드포인트
-     * @param OutliersDetected 감지된 이상치 수
-     * @param OutlierThreshold 이상치 임계값
-     * @return 통계가 유효한지 여부
-     */
-    bool GetOutlierStats(const FIPv4Endpoint& ServerEndpoint, int32& OutliersDetected, double& OutlierThreshold) const;
-
-    /**
-     * 시계열 샘플링 간격을 설정합니다.
-     * @param ServerEndpoint 서버 엔드포인트
-     * @param IntervalSeconds 샘플링 간격 (초)
-     */
-    void SetTimeSeriesSampleInterval(const FIPv4Endpoint& ServerEndpoint, double IntervalSeconds);
-
-    /**
-     * 시계열 데이터를 가져옵니다.
-     * @param ServerEndpoint 서버 엔드포인트
-     * @param OutTimeSeries 시계열 데이터가 저장될 배열
-     * @return 데이터가 유효한지 여부
-     */
-    bool GetTimeSeriesData(const FIPv4Endpoint& ServerEndpoint, TArray<FLatencyTimeSeriesSample>& OutTimeSeries) const;
-
-    /**
-     * 추세 분석 결과를 가져옵니다.
-     * @param ServerEndpoint 서버 엔드포인트
-     * @param OutTrendAnalysis 추세 분석 결과가 저장될 구조체
-     * @return 데이터가 유효한지 여부
-     */
-    bool GetNetworkTrendAnalysis(const FIPv4Endpoint& ServerEndpoint, FNetworkTrendAnalysis& OutTrendAnalysis) const;
 
     /** Get the list of discovered servers */
     TArray<FString> GetDiscoveredServers() const;
@@ -470,6 +452,10 @@ private:
     const int32 MAX_RTT_SAMPLES = 100;                        // 최대 RTT 샘플 수
     const double PING_TIMEOUT_SECONDS = 2.0;                  // 핑 타임아웃 시간 (초)
 
+    // 네트워크 상태 변화 관련 멤버 변수
+    TFunction<void(const FIPv4Endpoint&, ENetworkEventType, const FNetworkQualityAssessment&)> NetworkStateChangeHandler;
+    FTSTicker::FDelegateHandle QualityAssessmentTickHandle;   // 품질 평가 틱 핸들
+
     // 주기적 핑 요청 관리를 위한 구조체
     struct FPeriodicPingState
     {
@@ -558,6 +544,14 @@ private:
     void UpdateRTTStatistics(const FIPv4Endpoint& ServerEndpoint, double RTT);
     void CheckPingTimeouts();
     bool TickLatencyMeasurement(float DeltaTime);
+
+    // 네트워크 품질 평가 관련 메서드
+    int32 CalculateLatencyScore(double RTT, double HighLatencyThreshold) const;
+    int32 CalculateJitterScore(double Jitter, double HighJitterThreshold) const;
+    int32 CalculatePacketLossScore(double LossRate, double HighPacketLossThreshold) const;
+    int32 CalculateStabilityScore(const FNetworkTrendAnalysis& TrendAnalysis) const;
+    void ProcessNetworkStateChange(const FIPv4Endpoint& ServerEndpoint, ENetworkEventType EventType, const FNetworkQualityAssessment& Quality);
+    bool CheckQualityAssessments(float DeltaTime);
 
     /** 다음 시퀀스 번호 생성 */
     uint16 GetNextSequenceNumber();

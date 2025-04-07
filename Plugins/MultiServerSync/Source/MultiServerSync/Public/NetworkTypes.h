@@ -53,6 +53,101 @@ struct MULTISERVERSYNC_API FNetworkTrendAnalysis
     }
 };
 
+/**
+ * 네트워크 이벤트 유형
+ * 네트워크 상태 변화를 나타내는 이벤트
+ */
+enum class ENetworkEventType : uint8
+{
+    None,               // 이벤트 없음
+    QualityImproved,    // 품질 개선
+    QualityDegraded,    // 품질 저하
+    ConnectionLost,     // 연결 끊김
+    ConnectionRestored, // 연결 복구
+    HighLatency,        // 높은 지연 시간
+    HighJitter,         // 높은 지터
+    HighPacketLoss,     // 높은 패킷 손실
+    Stabilized          // 네트워크 안정화
+};
+
+/**
+ * 네트워크 품질 평가 결과 구조체
+ * 다양한 지표를 기반으로 네트워크 상태를 종합적으로 평가
+ */
+struct MULTISERVERSYNC_API FNetworkQualityAssessment
+{
+    int32 QualityScore;        // 종합 품질 점수 (0-100)
+    int32 QualityLevel;        // 품질 레벨 (0: Poor, 1: Fair, 2: Good, 3: Excellent)
+    FString QualityString;     // 품질 설명
+
+    // 개별 지표 점수 (0-100)
+    int32 LatencyScore;        // 지연 시간 점수
+    int32 JitterScore;         // 지터 점수
+    int32 PacketLossScore;     // 패킷 손실 점수
+    int32 StabilityScore;      // 안정성 점수
+
+    // 추가 정보
+    FString DetailedDescription;   // 상세 설명
+    TArray<FString> Recommendations; // 권장 사항
+
+    // 이전 품질 평가와의 변화
+    float QualityChangeTrend;  // 품질 변화 추세 (양수: 개선, 음수: 악화)
+
+    // 네트워크 상태 이벤트
+    ENetworkEventType LatestEvent;  // 최근 발생한 이벤트
+    double EventTimestamp;           // 이벤트 발생 시간
+
+    // 기본 생성자
+    FNetworkQualityAssessment()
+        : QualityScore(0)
+        , QualityLevel(0)
+        , QualityString(TEXT("Unknown"))
+        , LatencyScore(0)
+        , JitterScore(0)
+        , PacketLossScore(0)
+        , StabilityScore(0)
+        , DetailedDescription(TEXT(""))
+        , QualityChangeTrend(0.0f)
+        , LatestEvent(ENetworkEventType::None)
+        , EventTimestamp(0.0)
+    {
+        Recommendations.Empty();
+    }
+
+    // 품질 정보를 문자열로 변환
+    FString ToString() const
+    {
+        return FString::Printf(TEXT("Quality: %s (%d/100) - Latency: %d%%, Jitter: %d%%, Loss: %d%%, Stability: %d%%"),
+            *QualityString, QualityScore, LatencyScore, JitterScore, PacketLossScore, StabilityScore);
+    }
+
+    // 이벤트 유형을 문자열로 변환
+    static FString EventTypeToString(ENetworkEventType EventType)
+    {
+        switch (EventType)
+        {
+        case ENetworkEventType::QualityImproved:
+            return TEXT("Quality Improved");
+        case ENetworkEventType::QualityDegraded:
+            return TEXT("Quality Degraded");
+        case ENetworkEventType::ConnectionLost:
+            return TEXT("Connection Lost");
+        case ENetworkEventType::ConnectionRestored:
+            return TEXT("Connection Restored");
+        case ENetworkEventType::HighLatency:
+            return TEXT("High Latency");
+        case ENetworkEventType::HighJitter:
+            return TEXT("High Jitter");
+        case ENetworkEventType::HighPacketLoss:
+            return TEXT("High Packet Loss");
+        case ENetworkEventType::Stabilized:
+            return TEXT("Network Stabilized");
+        default:
+            return TEXT("None");
+        }
+    }
+};
+
 // 네트워크 지연 통계 구조체
 struct MULTISERVERSYNC_API FNetworkLatencyStats
 {
@@ -82,6 +177,24 @@ struct MULTISERVERSYNC_API FNetworkLatencyStats
     double LastTimeSeriesSampleTime;               // 마지막 시계열 샘플 시간
     FNetworkTrendAnalysis TrendAnalysis;           // 추세 분석 결과
 
+    // 네트워크 상태 평가 관련 필드 (새로 추가)
+    FNetworkQualityAssessment CurrentQuality;      // 현재 네트워크 품질 평가
+    TArray<FNetworkQualityAssessment> QualityHistory; // 품질 평가 히스토리
+    int32 MaxQualityHistoryCount;                  // 최대 품질 평가 기록 수
+    double QualityAssessmentInterval;              // 품질 평가 간격 (초)
+    double LastQualityAssessmentTime;              // 마지막 품질 평가 시간
+
+    // 상태 변화 감지 관련 필드 (새로 추가)
+    bool bMonitorStateChanges;                     // 상태 변화 모니터링 활성화 여부
+    double StateChangeThreshold;                   // 상태 변화 감지 임계값
+    TArray<ENetworkEventType> RecentEvents;        // 최근 이벤트 기록
+    int32 MaxEventHistory;                         // 최대 이벤트 기록 수
+
+    // 성능 지표 임계값 (새로 추가)
+    double HighLatencyThreshold;                   // 높은 지연 시간 임계값 (ms)
+    double HighJitterThreshold;                    // 높은 지터 임계값 (ms)
+    double HighPacketLossThreshold;                // 높은 패킷 손실 임계값 (비율)
+
     // 기본 생성자
     FNetworkLatencyStats()
         : MinRTT(FLT_MAX)
@@ -105,12 +218,28 @@ struct MULTISERVERSYNC_API FNetworkLatencyStats
         , TimeSeriesSampleInterval(1.0)        // 기본값: 1초마다 샘플링
         , LastTimeSeriesSampleTime(0.0)
         , TrendAnalysis()
+        , CurrentQuality()
+        , MaxQualityHistoryCount(20)           // 기본값: 최근 20개 품질 평가 기록
+        , QualityAssessmentInterval(5.0)       // 기본값: 5초마다 품질 평가
+        , LastQualityAssessmentTime(0.0)
+        , bMonitorStateChanges(true)           // 기본값: 상태 변화 모니터링 활성화
+        , StateChangeThreshold(15.0)           // 기본값: 품질 점수 15점 이상 변화 시 이벤트 발생
+        , MaxEventHistory(10)                  // 기본값: 최근 10개 이벤트 기록
+        , HighLatencyThreshold(150.0)          // 기본값: 150ms 이상을 높은 지연으로 간주
+        , HighJitterThreshold(50.0)            // 기본값: 50ms 이상을 높은 지터로 간주
+        , HighPacketLossThreshold(0.05)        // 기본값: 5% 이상을 높은 패킷 손실로 간주
     {
         // 최근 RTT 기록을 위한 공간 예약
         RecentRTTs.Reserve(100);
 
         // 시계열 데이터를 위한 공간 예약
         TimeSeries.Reserve(MaxTimeSeriesSamples);
+
+        // 품질 평가 히스토리를 위한 공간 예약
+        QualityHistory.Reserve(MaxQualityHistoryCount);
+
+        // 이벤트 기록을 위한 공간 예약
+        RecentEvents.Reserve(MaxEventHistory);
     }
 
     // 최근 RTT 샘플 추가 및 통계 업데이트
@@ -118,6 +247,18 @@ struct MULTISERVERSYNC_API FNetworkLatencyStats
 
     // 추세 분석 수행
     void AnalyzeTrend();
+
+    // 네트워크 품질 평가 수행 (새로 추가)
+    FNetworkQualityAssessment AssessNetworkQuality();
+
+    // 네트워크 상태 변화 감지 (새로 추가)
+    ENetworkEventType DetectStateChange(const FNetworkQualityAssessment& NewQuality, const FNetworkQualityAssessment& PreviousQuality);
+
+    // 이벤트 추가 및 관리 (새로 추가)
+    void AddNetworkEvent(ENetworkEventType EventType, double Timestamp);
+
+    // 가장 최근 이벤트 얻기 (새로 추가)
+    ENetworkEventType GetLatestEvent() const;
 
     // 시계열 샘플 간격 설정
     void SetTimeSeriesSampleInterval(double IntervalSeconds)
@@ -142,5 +283,25 @@ struct MULTISERVERSYNC_API FNetworkLatencyStats
     const FNetworkTrendAnalysis& GetTrendAnalysis() const
     {
         return TrendAnalysis;
+    }
+
+    // 품질 평가 간격 설정 (새로 추가)
+    void SetQualityAssessmentInterval(double IntervalSeconds)
+    {
+        QualityAssessmentInterval = FMath::Max(1.0, IntervalSeconds);
+    }
+
+    // 품질 평가 히스토리 가져오기 (새로 추가)
+    const TArray<FNetworkQualityAssessment>& GetQualityHistory() const
+    {
+        return QualityHistory;
+    }
+
+    // 성능 지표 임계값 설정 (새로 추가)
+    void SetPerformanceThresholds(double LatencyThreshold, double JitterThreshold, double PacketLossThreshold)
+    {
+        HighLatencyThreshold = FMath::Max(50.0, LatencyThreshold);      // 최소 50ms
+        HighJitterThreshold = FMath::Max(10.0, JitterThreshold);        // 최소 10ms
+        HighPacketLossThreshold = FMath::Clamp(PacketLossThreshold, 0.01, 0.5); // 1%~50%
     }
 };

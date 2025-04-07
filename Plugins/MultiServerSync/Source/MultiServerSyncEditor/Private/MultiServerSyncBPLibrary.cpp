@@ -557,3 +557,239 @@ int32 UMultiServerSyncBPLibrary::GetSyncStatus()
 
     return TimeSync->GetSyncStatus();
 }
+
+bool UMultiServerSyncBPLibrary::EvaluateNetworkQualityDetailed(const FString& ServerIP, int32 ServerPort,
+    int32& QualityScore, int32& LatencyScore, int32& JitterScore, int32& PacketLossScore,
+    int32& StabilityScore, FString& DetailedDescription, TArray<FString>& Recommendations,
+    float& QualityTrend)
+{
+    // 초기값 설정
+    QualityScore = 0;
+    LatencyScore = 0;
+    JitterScore = 0;
+    PacketLossScore = 0;
+    StabilityScore = 0;
+    DetailedDescription = TEXT("No network statistics available.");
+    Recommendations.Empty();
+    QualityTrend = 0.0f;
+
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to evaluate network quality: Framework manager is not available"));
+        return false;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to evaluate network quality: Network manager is not available"));
+        return false;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to evaluate network quality: Invalid IP address '%s'"), *ServerIP);
+        return false;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 상세 품질 평가 수행
+    FNetworkQualityAssessment Quality = NetworkManager->EvaluateNetworkQualityDetailed(ServerEndpoint);
+
+    // 결과 복사
+    QualityScore = Quality.QualityScore;
+    LatencyScore = Quality.LatencyScore;
+    JitterScore = Quality.JitterScore;
+    PacketLossScore = Quality.PacketLossScore;
+    StabilityScore = Quality.StabilityScore;
+    DetailedDescription = Quality.DetailedDescription;
+    Recommendations = Quality.Recommendations;
+    QualityTrend = Quality.QualityChangeTrend;
+
+    return true;
+}
+
+void UMultiServerSyncBPLibrary::SetNetworkStateChangeThreshold(const FString& ServerIP, int32 ServerPort, float Threshold)
+{
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set state change threshold: Framework manager is not available"));
+        return;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set state change threshold: Network manager is not available"));
+        return;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set state change threshold: Invalid IP address '%s'"), *ServerIP);
+        return;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 임계값 설정
+    NetworkManager->SetNetworkStateChangeThreshold(ServerEndpoint, static_cast<double>(Threshold));
+}
+
+void UMultiServerSyncBPLibrary::SetNetworkPerformanceThresholds(const FString& ServerIP, int32 ServerPort,
+    float LatencyThreshold, float JitterThreshold, float PacketLossThreshold)
+{
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set performance thresholds: Framework manager is not available"));
+        return;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set performance thresholds: Network manager is not available"));
+        return;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set performance thresholds: Invalid IP address '%s'"), *ServerIP);
+        return;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 임계값 설정
+    NetworkManager->SetNetworkPerformanceThresholds(
+        ServerEndpoint,
+        static_cast<double>(LatencyThreshold),
+        static_cast<double>(JitterThreshold),
+        static_cast<double>(PacketLossThreshold)
+    );
+}
+
+void UMultiServerSyncBPLibrary::SetQualityAssessmentInterval(const FString& ServerIP, int32 ServerPort, float IntervalSeconds)
+{
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set quality assessment interval: Framework manager is not available"));
+        return;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set quality assessment interval: Network manager is not available"));
+        return;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set quality assessment interval: Invalid IP address '%s'"), *ServerIP);
+        return;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 간격 설정
+    NetworkManager->SetQualityAssessmentInterval(ServerEndpoint, static_cast<double>(IntervalSeconds));
+}
+
+void UMultiServerSyncBPLibrary::SetNetworkStateMonitoring(const FString& ServerIP, int32 ServerPort, bool bEnable)
+{
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set network state monitoring: Framework manager is not available"));
+        return;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set network state monitoring: Network manager is not available"));
+        return;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set network state monitoring: Invalid IP address '%s'"), *ServerIP);
+        return;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 모니터링 설정
+    NetworkManager->SetNetworkStateMonitoring(ServerEndpoint, bEnable);
+}
+
+bool UMultiServerSyncBPLibrary::GetLatestNetworkEvent(const FString& ServerIP, int32 ServerPort, int32& EventType, FString& EventDescription)
+{
+    // 초기값 설정
+    EventType = 0; // None
+    EventDescription = TEXT("No recent network events.");
+
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get latest network event: Framework manager is not available"));
+        return false;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get latest network event: Network manager is not available"));
+        return false;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get latest network event: Invalid IP address '%s'"), *ServerIP);
+        return false;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 이벤트 기록 가져오기
+    TArray<ENetworkEventType> Events;
+    if (!NetworkManager->GetNetworkEventHistory(ServerEndpoint, Events) || Events.Num() == 0)
+    {
+        return false;
+    }
+
+    // 가장 최근 이벤트 가져오기
+    ENetworkEventType LatestEvent = Events.Last();
+
+    // 이벤트 유형 변환 (열거형 -> 정수)
+    EventType = static_cast<int32>(LatestEvent);
+
+    // 이벤트 설명 생성
+    EventDescription = FNetworkQualityAssessment::EventTypeToString(LatestEvent);
+
+    return true;
+}
