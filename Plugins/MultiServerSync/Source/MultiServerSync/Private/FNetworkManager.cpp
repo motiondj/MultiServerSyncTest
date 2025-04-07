@@ -184,7 +184,6 @@ void FNetworkReceiverWorker::Exit()
     // 스레드 종료 시 필요한 정리 작업
 }
 
-// FNetworkManager 클래스 구현
 FNetworkManager::FNetworkManager()
     : BroadcastSocket(nullptr)
     , ReceiveSocket(nullptr)
@@ -200,6 +199,8 @@ FNetworkManager::FNetworkManager()
     , CurrentElectionTerm(0)
     , LastMasterAnnouncementTime(0.0)
     , LastElectionStartTime(0.0)
+    , HardwareTimerInitTime(0)
+    , HardwareTimerOffset(0)
 {
     // 프로젝트 ID 초기화
     ProjectId = FGuid::NewGuid();
@@ -273,6 +274,9 @@ bool FNetworkManager::Initialize()
         return false;
     }
 
+    // 하드웨어 타이머 보정
+    CalibrateHardwareTimer();
+
     UE_LOG(LogMultiServerSync, Display, TEXT("Network Manager initialized successfully"));
 
     bIsInitialized = true;
@@ -331,6 +335,33 @@ bool FNetworkManager::Initialize()
     }
 
     return true;
+}
+
+// 하드웨어 타이머 보정
+void FNetworkManager::CalibrateHardwareTimer()
+{
+    // 현재 UTC 시간 (마이크로초)
+    uint64 UTCTimeMicros = FDateTime::UtcNow().GetTicks() / 10; // 100나노초 -> 마이크로초
+
+    // 현재 하드웨어 타이머 시간 (마이크로초)
+    double CycleTime = FPlatformTime::GetSecondsPerCycle();
+    uint64 Cycles = FPlatformTime::Cycles64();
+    uint64 HardwareTimeMicros = static_cast<uint64>(Cycles * CycleTime * 1000000.0);
+
+    // 초기 시간 저장
+    HardwareTimerInitTime = HardwareTimeMicros;
+
+    // 오프셋 계산 (UTC - 하드웨어 시간)
+    HardwareTimerOffset = static_cast<int64>(UTCTimeMicros) - static_cast<int64>(HardwareTimeMicros);
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Hardware timer calibrated: offset=%lld microseconds"), HardwareTimerOffset);
+}
+
+// 하드웨어 타이머를 UTC 시간으로 변환
+uint64 FNetworkManager::HardwareTimeToUTC(uint64 HardwareTime) const
+{
+    int64 UTCTime = static_cast<int64>(HardwareTime) + HardwareTimerOffset;
+    return static_cast<uint64>(UTCTime > 0 ? UTCTime : 0);
 }
 
 void FNetworkManager::Shutdown()
@@ -2063,8 +2094,8 @@ uint32 FNetworkManager::SendPingRequest(const FIPv4Endpoint& ServerEndpoint)
     // 시퀀스 번호 생성
     uint32 SequenceNumber = NextPingSequenceNumber++;
 
-    // 타임스탬프 생성 (마이크로초 단위)
-    uint64 CurrentTimestamp = FDateTime::UtcNow().GetTicks();
+    // 고정밀 타임스탬프 생성
+    uint64 CurrentTimestamp = GetHighPrecisionTimestamp();
 
     // 핑 요청 메시지 생성
     FPingMessage PingRequest;
@@ -2089,8 +2120,8 @@ uint32 FNetworkManager::SendPingRequest(const FIPv4Endpoint& ServerEndpoint)
     double CurrentTimeSeconds = FPlatformTime::Seconds();
     PendingPingRequests.Add(SequenceNumber, TPair<FIPv4Endpoint, double>(ServerEndpoint, CurrentTimeSeconds));
 
-    UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent ping request to %s (Seq: %u)"),
-        *ServerEndpoint.ToString(), SequenceNumber);
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent ping request to %s (Seq: %u, Timestamp: %llu)"),
+        *ServerEndpoint.ToString(), SequenceNumber, CurrentTimestamp);
 
     return SequenceNumber;
 }
@@ -2102,6 +2133,9 @@ void FNetworkManager::SendPingResponse(const FPingMessage& RequestMessage, const
     PingResponse.Type = EPingMessageType::Response;
     PingResponse.Timestamp = RequestMessage.Timestamp; // 원본 타임스탬프 유지
     PingResponse.SequenceNumber = RequestMessage.SequenceNumber; // 원본 시퀀스 번호 유지
+
+    // 현재 처리 시간 기록 (새로 추가)
+    uint64 ProcessTime = GetHighPrecisionTimestamp();
 
     // 메시지 직렬화
     TArray<uint8> MessageData;
@@ -2116,50 +2150,59 @@ void FNetworkManager::SendPingResponse(const FPingMessage& RequestMessage, const
     // 메시지 전송
     SendMessageToEndpoint(SourceEndpoint, NetworkMessage);
 
-    UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent ping response to %s (Seq: %u)"),
-        *SourceEndpoint.ToString(), RequestMessage.SequenceNumber);
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent ping response to %s (Seq: %u, Original timestamp: %llu, Process time: %llu)"),
+        *SourceEndpoint.ToString(), RequestMessage.SequenceNumber, RequestMessage.Timestamp, ProcessTime);
 }
 
 // 핑 요청 처리 함수
 void FNetworkManager::HandlePingRequest(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint)
 {
+    // 수신 시간 기록
+    uint64 ReceiveTime = GetHighPrecisionTimestamp();
+
     // 요청 메시지 파싱
     FPingMessage RequestMessage;
     RequestMessage.Deserialize(*ReaderPtr);
 
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Received ping request from %s (Seq: %u, Timestamp: %llu, Received: %llu)"),
+        *SourceEndpoint.ToString(), RequestMessage.SequenceNumber, RequestMessage.Timestamp, ReceiveTime);
+
     // 응답 전송
-    this->SendPingResponse(RequestMessage, SourceEndpoint);
+    SendPingResponse(RequestMessage, SourceEndpoint);
 }
 
-// HandlePingResponse 함수 구현 - 매개변수 타입을 FMemoryReader로 변경
 void FNetworkManager::HandlePingResponse(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint)
 {
-    // 현재 시간 (초)
-    double CurrentTime = FPlatformTime::Seconds();
-
     // 응답 메시지 파싱
     FPingMessage ResponseMessage;
     ResponseMessage.Deserialize(*ReaderPtr);
 
     // 요청 시간 찾기
     uint32 SequenceNumber = ResponseMessage.SequenceNumber;
-    if (this->PendingPingRequests.Contains(SequenceNumber))
+    if (PendingPingRequests.Contains(SequenceNumber))
     {
         // 요청 정보 얻기
-        TPair<FIPv4Endpoint, double> RequestInfo = this->PendingPingRequests[SequenceNumber];
+        TPair<FIPv4Endpoint, double> RequestInfo = PendingPingRequests[SequenceNumber];
         double RequestTime = RequestInfo.Value;
 
-        // RTT 계산 (밀리초 단위)
-        double RTT = (CurrentTime - RequestTime) * 1000.0;
+        // 고정밀 타임스탬프로 계산
+        uint64 RequestTimestamp = ResponseMessage.Timestamp;
+        uint64 CurrentTimestamp = GetHighPrecisionTimestamp();
+
+        // 고정밀 RTT 계산 (마이크로초)
+        uint64 PreciseRTT = CurrentTimestamp - RequestTimestamp;
+
+        // 밀리초 단위로 변환
+        double RTT = static_cast<double>(PreciseRTT) / 1000.0;
 
         // 통계 업데이트
-        this->UpdateRTTStatistics(SourceEndpoint, RTT);
+        UpdateRTTStatistics(SourceEndpoint, RTT);
 
         // 요청 목록에서 제거
-        this->PendingPingRequests.Remove(SequenceNumber);
+        PendingPingRequests.Remove(SequenceNumber);
 
-        UE_LOG(LogMultiServerSync, Verbose, TEXT("Received ping response from %s (Seq: %u, RTT: %.2f ms)"),
-            *SourceEndpoint.ToString(), SequenceNumber, RTT);
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Received ping response from %s (Seq: %u, Precise RTT: %llu μs, RTT: %.2f ms)"),
+            *SourceEndpoint.ToString(), SequenceNumber, PreciseRTT, RTT);
     }
     else
     {
@@ -2403,4 +2446,22 @@ void FNetworkManager::StopLatencyMeasurement(const FIPv4Endpoint& ServerEndpoint
         UE_LOG(LogMultiServerSync, Log, TEXT("Latency statistics for %s: Min=%.2f ms, Max=%.2f ms, Avg=%.2f ms, Jitter=%.2f ms, Samples=%d, Lost=%d"),
             *ServerID, Stats.MinRTT, Stats.MaxRTT, Stats.AvgRTT, Stats.Jitter, Stats.SampleCount, Stats.LostPackets);
     }
+}
+
+// 고정밀 타임스탬프 생성 함수
+uint64 FNetworkManager::GetHighPrecisionTimestamp() const
+{
+    // 하드웨어 타이머를 이용하여 고정밀 시간 측정
+    double CycleTime = FPlatformTime::GetSecondsPerCycle();
+    uint64 Cycles = FPlatformTime::Cycles64();
+    uint64 HardwareTimeMicros = static_cast<uint64>(Cycles * CycleTime * 1000000.0);
+
+    // 하드웨어 타이머 초기화가 되지 않은 경우 UTC 시간 사용
+    if (HardwareTimerInitTime == 0)
+    {
+        return FDateTime::UtcNow().GetTicks() / 10; // 100나노초 -> 마이크로초
+    }
+
+    // 하드웨어 타이머를 UTC 시간으로 변환
+    return HardwareTimeToUTC(HardwareTimeMicros);
 }

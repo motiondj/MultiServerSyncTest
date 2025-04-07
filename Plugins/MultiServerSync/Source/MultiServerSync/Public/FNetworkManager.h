@@ -511,4 +511,19 @@ private:
 
     /** 마스터-슬레이브 프로토콜 틱 콜백 */
     bool MasterSlaveProtocolTick(float DeltaTime);
+
+    // 고정밀 타임스탬프 생성 메서드
+    uint64 GetHighPrecisionTimestamp() const;
+
+    // 하드웨어 타이머 초기화 시간 (마이크로초)
+    uint64 HardwareTimerInitTime;
+
+    // 하드웨어 타이머 오프셋 (마이크로초)
+    int64 HardwareTimerOffset;
+
+    // 하드웨어 타이머 보정 메서드
+    void CalibrateHardwareTimer();
+
+    // 하드웨어 타이머를 UTC 시간으로 변환
+    uint64 HardwareTimeToUTC(uint64 HardwareTime) const;
 };
