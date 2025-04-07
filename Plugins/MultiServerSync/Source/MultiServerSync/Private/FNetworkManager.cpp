@@ -634,6 +634,9 @@ void FNetworkManager::CheckPingTimeouts()
             {
                 ServerLatencyStats[ServerID].LostPackets++;
             }
+
+            // 연속 타임아웃 증가
+            IncrementConsecutiveTimeouts(ServerEndpoint);
         }
     }
 
@@ -2171,6 +2174,7 @@ void FNetworkManager::HandlePingRequest(const TSharedPtr<FMemoryReader>& ReaderP
     SendPingResponse(RequestMessage, SourceEndpoint);
 }
 
+// 약 4270줄 근처, HandlePingResponse 메서드 수정
 void FNetworkManager::HandlePingResponse(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint)
 {
     // 응답 메시지 파싱
@@ -2197,6 +2201,37 @@ void FNetworkManager::HandlePingResponse(const TSharedPtr<FMemoryReader>& Reader
 
         // 통계 업데이트
         UpdateRTTStatistics(SourceEndpoint, RTT);
+
+        // 연속 타임아웃 리셋
+        ResetConsecutiveTimeouts(SourceEndpoint);
+
+        // 서버 ID 가져오기
+        FString ServerID = SourceEndpoint.ToString();
+
+        // 주기적 핑 상태 업데이트
+        for (FPeriodicPingState& PingState : PeriodicPingStates)
+        {
+            if (PingState.ServerEndpoint == SourceEndpoint && PingState.bIsActive && PingState.bDynamicSampling)
+            {
+                // 네트워크 품질 계수 업데이트
+                UpdateNetworkQualityFactor(PingState, ServerID);
+
+                // 새 샘플링 간격 계산
+                float NewInterval = CalculateDynamicSamplingRate(PingState);
+
+                // 간격이 크게 변경된 경우만 업데이트 (작은 변동 무시)
+                if (FMath::Abs(NewInterval - PingState.IntervalSeconds) > 0.1f)
+                {
+                    float OldInterval = PingState.IntervalSeconds;
+                    PingState.IntervalSeconds = NewInterval;
+
+                    UE_LOG(LogMultiServerSync, Verbose, TEXT("Updated sampling interval for %s: %.2f -> %.2f seconds"),
+                        *ServerID, OldInterval, NewInterval);
+                }
+
+                break;
+            }
+        }
 
         // 요청 목록에서 제거
         PendingPingRequests.Remove(SequenceNumber);
@@ -2229,7 +2264,9 @@ void FNetworkManager::UpdateRTTStatistics(const FIPv4Endpoint& ServerEndpoint, d
 }
 
 // 주기적 핑 활성화 함수 구현
-void FNetworkManager::EnablePeriodicPing(const FIPv4Endpoint& ServerEndpoint, float IntervalSeconds)
+void FNetworkManager::EnablePeriodicPing(const FIPv4Endpoint& ServerEndpoint, float IntervalSeconds,
+    bool bDynamicSampling, float MinIntervalSeconds,
+    float MaxIntervalSeconds)
 {
     // 이미 존재하는 주기적 핑 상태 확인
     for (FPeriodicPingState& PingState : PeriodicPingStates)
@@ -2241,8 +2278,15 @@ void FNetworkManager::EnablePeriodicPing(const FIPv4Endpoint& ServerEndpoint, fl
             PingState.TimeRemainingSeconds = 0.0f; // 즉시 핑 전송
             PingState.bIsActive = true;
 
-            UE_LOG(LogMultiServerSync, Verbose, TEXT("Updated periodic ping to %s (Interval: %.2f seconds)"),
-                *ServerEndpoint.ToString(), IntervalSeconds);
+            // 동적 샘플링 설정 업데이트
+            PingState.bDynamicSampling = bDynamicSampling;
+            PingState.MinIntervalSeconds = FMath::Max(0.1f, MinIntervalSeconds);
+            PingState.MaxIntervalSeconds = FMath::Max(PingState.MinIntervalSeconds, MaxIntervalSeconds);
+            PingState.NetworkQualityFactor = 0.5f; // 초기값 (중간)
+            PingState.ConsecutiveTimeouts = 0;
+
+            UE_LOG(LogMultiServerSync, Verbose, TEXT("Updated periodic ping to %s (Interval: %.2f seconds, Dynamic: %s)"),
+                *ServerEndpoint.ToString(), IntervalSeconds, bDynamicSampling ? TEXT("true") : TEXT("false"));
             return;
         }
     }
@@ -2254,6 +2298,13 @@ void FNetworkManager::EnablePeriodicPing(const FIPv4Endpoint& ServerEndpoint, fl
     NewPingState.TimeRemainingSeconds = 0.0f; // 즉시 핑 전송
     NewPingState.bIsActive = true;
 
+    // 동적 샘플링 설정
+    NewPingState.bDynamicSampling = bDynamicSampling;
+    NewPingState.MinIntervalSeconds = FMath::Max(0.1f, MinIntervalSeconds);
+    NewPingState.MaxIntervalSeconds = FMath::Max(NewPingState.MinIntervalSeconds, MaxIntervalSeconds);
+    NewPingState.NetworkQualityFactor = 0.5f; // 초기값 (중간)
+    NewPingState.ConsecutiveTimeouts = 0;
+
     PeriodicPingStates.Add(NewPingState);
 
     // 틱 함수가 등록되어 있지 않으면 등록
@@ -2261,7 +2312,7 @@ void FNetworkManager::EnablePeriodicPing(const FIPv4Endpoint& ServerEndpoint, fl
     {
         LatencyMeasurementTickHandle = FTSTicker::GetCoreTicker().AddTicker(
             FTickerDelegate::CreateRaw(this, &FNetworkManager::TickLatencyMeasurement),
-            IntervalSeconds);
+            0.1f); // 0.1초마다 틱 (더 작은 간격 지원을 위해)
     }
 
     // 타임아웃 체크 함수가 등록되어 있지 않으면 등록
@@ -2276,8 +2327,8 @@ void FNetworkManager::EnablePeriodicPing(const FIPv4Endpoint& ServerEndpoint, fl
             1.0f); // 1초마다 타임아웃 체크
     }
 
-    UE_LOG(LogMultiServerSync, Verbose, TEXT("Enabled periodic ping to %s (Interval: %.2f seconds)"),
-        *ServerEndpoint.ToString(), IntervalSeconds);
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Enabled periodic ping to %s (Interval: %.2f seconds, Dynamic: %s)"),
+        *ServerEndpoint.ToString(), IntervalSeconds, bDynamicSampling ? TEXT("true") : TEXT("false"));
 }
 
 // 주기적 핑 비활성화 함수 구현
@@ -2297,6 +2348,7 @@ void FNetworkManager::DisablePeriodicPing(const FIPv4Endpoint& ServerEndpoint)
 }
 
 // 핑 타이머 틱 함수 구현
+// 약 4350줄 근처, TickLatencyMeasurement 함수 수정
 bool FNetworkManager::TickLatencyMeasurement(float DeltaTime)
 {
     // 활성화된 핑 상태가 없으면 틱 비활성화
@@ -2319,7 +2371,7 @@ bool FNetworkManager::TickLatencyMeasurement(float DeltaTime)
             // 핑 요청 전송
             SendPingRequest(PingState.ServerEndpoint);
 
-            // 타이머 리셋
+            // 타이머 리셋 (동적 샘플링인 경우 최신 간격 사용)
             PingState.TimeRemainingSeconds = PingState.IntervalSeconds;
         }
     }
@@ -2464,4 +2516,126 @@ uint64 FNetworkManager::GetHighPrecisionTimestamp() const
 
     // 하드웨어 타이머를 UTC 시간으로 변환
     return HardwareTimeToUTC(HardwareTimeMicros);
+}
+
+// 동적 샘플링 레이트 계산
+float FNetworkManager::CalculateDynamicSamplingRate(const FPeriodicPingState& PingState) const
+{
+    // 동적 샘플링이 비활성화된 경우 기본 간격 반환
+    if (!PingState.bDynamicSampling)
+    {
+        return PingState.IntervalSeconds;
+    }
+
+    // 네트워크 품질 기반 간격 계산 (0.0: 최고품질 = 최소간격, 1.0: 최저품질 = 최대간격)
+    float QualityFactor = PingState.NetworkQualityFactor;
+
+    // 연속 타임아웃이 있으면 간격 증가 (불안정 네트워크 부하 방지)
+    if (PingState.ConsecutiveTimeouts > 0)
+    {
+        // 타임아웃당 10%씩 간격 증가 (최대 3배)
+        float TimeoutFactor = FMath::Min(3.0f, 1.0f + (PingState.ConsecutiveTimeouts * 0.1f));
+        QualityFactor = FMath::Min(1.0f, QualityFactor * TimeoutFactor);
+    }
+
+    // 간격 계산 (선형 보간)
+    float NewInterval = FMath::Lerp(
+        PingState.MinIntervalSeconds,
+        PingState.MaxIntervalSeconds,
+        QualityFactor
+    );
+
+    return NewInterval;
+}
+
+// 네트워크 품질 계수 업데이트
+void FNetworkManager::UpdateNetworkQualityFactor(FPeriodicPingState& PingState, const FString& ServerID)
+{
+    // 서버 통계가 없으면 기본값 유지
+    if (!ServerLatencyStats.Contains(ServerID))
+    {
+        return;
+    }
+
+    const FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+
+    // 샘플 수가 너무 적으면 업데이트하지 않음
+    if (Stats.SampleCount < 5)
+    {
+        return;
+    }
+
+    // 네트워크 품질 계산 (0.0: 최고품질, 1.0: 최저품질)
+    float QualityFactor = 0.5f; // 기본값 (중간)
+
+    // 평균 RTT 기반 품질 계산 (임계값: 300ms)
+    float RttFactor = FMath::Clamp(Stats.AvgRTT / 300.0, 0.0, 1.0);
+
+    // 지터 기반 품질 계산 (임계값: 100ms)
+    float JitterFactor = FMath::Clamp(Stats.Jitter / 100.0, 0.0, 1.0);
+
+    // 패킷 손실 기반 품질 계산
+    float LossRate = 0.0f;
+    if (Stats.SampleCount + Stats.LostPackets > 0)
+    {
+        LossRate = static_cast<float>(Stats.LostPackets) / (Stats.SampleCount + Stats.LostPackets);
+    }
+    float LossFactor = FMath::Clamp(LossRate * 10.0, 0.0, 1.0); // 10% 이상 손실 시 최저품질
+
+    // 종합 품질 계산 (각 요소 가중치 조정 가능)
+    QualityFactor = RttFactor * 0.4f + JitterFactor * 0.3f + LossFactor * 0.3f;
+
+    // 품질 계수 업데이트 (급격한 변화 방지를 위한 평활화)
+    PingState.NetworkQualityFactor = PingState.NetworkQualityFactor * 0.7f + QualityFactor * 0.3f;
+
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Updated network quality factor for %s: %.2f (RTT: %.2f ms, Jitter: %.2f ms, Loss: %.2f%%)"),
+        *ServerID, PingState.NetworkQualityFactor, Stats.AvgRTT, Stats.Jitter, LossRate * 100.0f);
+}
+
+// 연속 타임아웃 증가
+void FNetworkManager::IncrementConsecutiveTimeouts(const FIPv4Endpoint& ServerEndpoint)
+{
+    for (FPeriodicPingState& PingState : PeriodicPingStates)
+    {
+        if (PingState.ServerEndpoint == ServerEndpoint && PingState.bIsActive)
+        {
+            PingState.ConsecutiveTimeouts++;
+
+            // 타임아웃 로깅
+            UE_LOG(LogMultiServerSync, Warning, TEXT("Consecutive timeouts for %s: %d"),
+                *ServerEndpoint.ToString(), PingState.ConsecutiveTimeouts);
+
+            // 연속 타임아웃이 많으면 샘플링 간격 증가
+            if (PingState.bDynamicSampling && PingState.ConsecutiveTimeouts > 3)
+            {
+                float NewInterval = CalculateDynamicSamplingRate(PingState);
+                PingState.IntervalSeconds = NewInterval;
+
+                UE_LOG(LogMultiServerSync, Warning, TEXT("Increasing sampling interval due to timeouts: %.2f seconds"),
+                    NewInterval);
+            }
+
+            return;
+        }
+    }
+}
+
+// 연속 타임아웃 리셋
+void FNetworkManager::ResetConsecutiveTimeouts(const FIPv4Endpoint& ServerEndpoint)
+{
+    for (FPeriodicPingState& PingState : PeriodicPingStates)
+    {
+        if (PingState.ServerEndpoint == ServerEndpoint && PingState.bIsActive)
+        {
+            // 타임아웃이 있었으면 로깅
+            if (PingState.ConsecutiveTimeouts > 0)
+            {
+                UE_LOG(LogMultiServerSync, Verbose, TEXT("Reset consecutive timeouts for %s (was: %d)"),
+                    *ServerEndpoint.ToString(), PingState.ConsecutiveTimeouts);
+            }
+
+            PingState.ConsecutiveTimeouts = 0;
+            return;
+        }
+    }
 }

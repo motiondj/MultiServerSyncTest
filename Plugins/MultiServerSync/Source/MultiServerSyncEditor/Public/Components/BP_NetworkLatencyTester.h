@@ -35,6 +35,18 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency")
     bool bAutoStart;
 
+    // 동적 샘플링 활성화 여부
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency")
+    bool bDynamicSampling;
+
+    // 최소 샘플링 간격 (초)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency", meta = (ClampMin = "0.1", ClampMax = "1.0", EditCondition = "bDynamicSampling"))
+    float MinSamplingInterval;
+
+    // 최대 샘플링 간격 (초)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency", meta = (ClampMin = "1.0", ClampMax = "10.0", EditCondition = "bDynamicSampling"))
+    float MaxSamplingInterval;
+
     // 통계 업데이트 간격 (초)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency", meta = (ClampMin = "0.1", ClampMax = "10.0"))
     float StatsUpdateInterval;

@@ -75,9 +75,19 @@ public:
      * @param ServerPort 서버 포트
      * @param IntervalSeconds 측정 간격 (초)
      * @param SampleCount 측정할 샘플 수 (0이면 무제한)
+     * @param bDynamicSampling 동적 샘플링 활성화 여부
+     * @param MinIntervalSeconds 최소 샘플링 간격 (초, 동적 샘플링 시)
+     * @param MaxIntervalSeconds 최대 샘플링 간격 (초, 동적 샘플링 시)
      */
     UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
-    static void StartNetworkLatencyMeasurement(const FString& ServerIP, int32 ServerPort, float IntervalSeconds = 1.0f, int32 SampleCount = 0);
+    static void StartNetworkLatencyMeasurement(
+        const FString& ServerIP,
+        int32 ServerPort,
+        float IntervalSeconds = 1.0f,
+        int32 SampleCount = 0,
+        bool bDynamicSampling = false,
+        float MinIntervalSeconds = 0.1f,
+        float MaxIntervalSeconds = 5.0f);
 
     /**
      * 특정 서버에 대한 네트워크 지연 측정을 중지합니다.

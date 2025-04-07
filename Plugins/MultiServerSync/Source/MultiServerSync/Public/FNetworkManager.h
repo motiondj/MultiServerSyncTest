@@ -358,8 +358,13 @@ public:
      * 지연 시간 측정을 위한 주기적인 핑 요청을 활성화합니다.
      * @param ServerEndpoint 핑을 보낼 서버 엔드포인트
      * @param IntervalSeconds 핑 요청 간격 (초)
+     * @param bDynamicSampling 동적 샘플링 활성화 여부
+     * @param MinIntervalSeconds 최소 샘플링 간격 (초, 동적 샘플링 시)
+     * @param MaxIntervalSeconds 최대 샘플링 간격 (초, 동적 샘플링 시)
      */
-    void EnablePeriodicPing(const FIPv4Endpoint& ServerEndpoint, float IntervalSeconds = 1.0f);
+    void EnablePeriodicPing(const FIPv4Endpoint& ServerEndpoint, float IntervalSeconds = 1.0f,
+        bool bDynamicSampling = false, float MinIntervalSeconds = 0.1f,
+        float MaxIntervalSeconds = 5.0f);
 
     /**
      * 주기적인 핑 요청을 비활성화합니다.
@@ -430,9 +435,27 @@ private:
     struct FPeriodicPingState
     {
         FIPv4Endpoint ServerEndpoint;     // 서버 엔드포인트
-        float IntervalSeconds;           // 핑 간격 (초)
-        float TimeRemainingSeconds;      // 다음 핑까지 남은 시간
-        bool bIsActive;                  // 활성 상태 여부
+        float IntervalSeconds;            // 핑 간격 (초)
+        float TimeRemainingSeconds;       // 다음 핑까지 남은 시간
+        bool bIsActive;                   // 활성 상태 여부
+        bool bDynamicSampling;            // 동적 샘플링 활성화 여부
+        float MinIntervalSeconds;         // 최소 샘플링 간격 (초)
+        float MaxIntervalSeconds;         // 최대 샘플링 간격 (초)
+        float NetworkQualityFactor;       // 네트워크 품질 계수 (0.0-1.0)
+        int32 ConsecutiveTimeouts;        // 연속 타임아웃 횟수
+
+        // 기본 생성자
+        FPeriodicPingState()
+            : IntervalSeconds(1.0f)
+            , TimeRemainingSeconds(0.0f)
+            , bIsActive(false)
+            , bDynamicSampling(false)
+            , MinIntervalSeconds(0.1f)
+            , MaxIntervalSeconds(5.0f)
+            , NetworkQualityFactor(0.5f)
+            , ConsecutiveTimeouts(0)
+        {
+        }
     };
 
     // 주기적 핑 상태 관리
@@ -526,4 +549,16 @@ private:
 
     // 하드웨어 타이머를 UTC 시간으로 변환
     uint64 HardwareTimeToUTC(uint64 HardwareTime) const;
+
+    // 동적 샘플링 레이트 계산
+    float CalculateDynamicSamplingRate(const FPeriodicPingState& PingState) const;
+
+    // 네트워크 품질 계수 업데이트
+    void UpdateNetworkQualityFactor(FPeriodicPingState& PingState, const FString& ServerID);
+
+    // 연속 타임아웃 증가
+    void IncrementConsecutiveTimeouts(const FIPv4Endpoint& ServerEndpoint);
+
+    // 연속 타임아웃 리셋
+    void ResetConsecutiveTimeouts(const FIPv4Endpoint& ServerEndpoint);
 };

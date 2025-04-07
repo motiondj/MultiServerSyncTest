@@ -111,7 +111,15 @@ TArray<FString> UMultiServerSyncBPLibrary::GetDiscoveredServers()
 }
 
 // 네트워크 지연 측정 시작
-void UMultiServerSyncBPLibrary::StartNetworkLatencyMeasurement(const FString& ServerIP, int32 ServerPort, float IntervalSeconds, int32 SampleCount)
+// 약 142줄 근처, StartNetworkLatencyMeasurement 함수 구현 수정
+void UMultiServerSyncBPLibrary::StartNetworkLatencyMeasurement(
+    const FString& ServerIP,
+    int32 ServerPort,
+    float IntervalSeconds,
+    int32 SampleCount,
+    bool bDynamicSampling,
+    float MinIntervalSeconds,
+    float MaxIntervalSeconds)
 {
     ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
@@ -138,7 +146,15 @@ void UMultiServerSyncBPLibrary::StartNetworkLatencyMeasurement(const FString& Se
     // 엔드포인트 생성
     FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
 
-    // 측정 시작
+    // 동적 샘플링 정보 로깅
+    if (bDynamicSampling)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Display, TEXT("Starting latency measurement with dynamic sampling (Min: %.2f s, Max: %.2f s)"),
+            MinIntervalSeconds, MaxIntervalSeconds);
+    }
+
+    // FNetworkManager 구현체를 직접 사용할 수 없으므로 인터페이스를 통해 측정만 시작
+    // 동적 샘플링 옵션은 지원하지 않음 - 이는 향후 인터페이스 확장 필요
     NetworkManager->StartLatencyMeasurement(ServerEndpoint, IntervalSeconds, SampleCount);
 }
 

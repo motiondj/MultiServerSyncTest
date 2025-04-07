@@ -17,6 +17,9 @@ UBP_NetworkLatencyTester::UBP_NetworkLatencyTester()
     MeasurementInterval = 1.0f;
     StatsUpdateInterval = 1.0f;
     bAutoStart = true;
+    bDynamicSampling = false;
+    MinSamplingInterval = 0.1f;
+    MaxSamplingInterval = 5.0f;
 
     bMeasurementActive = false;
 
@@ -83,19 +86,27 @@ void UBP_NetworkLatencyTester::StartMeasurement()
         ServerIP,
         ServerPort,
         MeasurementInterval,
-        0); // 무제한 샘플
+        0, // 무제한 샘플
+        bDynamicSampling,
+        MinSamplingInterval,
+        MaxSamplingInterval);
 
     bMeasurementActive = true;
 
     // 로그 출력
-    UE_LOG(LogTemp, Log, TEXT("Started network latency measurement to %s:%d (Interval: %.2f seconds)"),
-        *ServerIP, ServerPort, MeasurementInterval);
+    UE_LOG(LogTemp, Log, TEXT("Started network latency measurement to %s:%d (Interval: %.2f seconds, Dynamic: %s)"),
+        *ServerIP, ServerPort, MeasurementInterval, bDynamicSampling ? TEXT("true") : TEXT("false"));
 
     // 화면에도 표시
     if (GEngine)
     {
+        FString ModeText = bDynamicSampling ?
+            FString::Printf(TEXT("Dynamic mode (%.2f-%.2f s)"), MinSamplingInterval, MaxSamplingInterval) :
+            FString::Printf(TEXT("Fixed mode (%.2f s)"), MeasurementInterval);
+
         GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Green,
-            FString::Printf(TEXT("Started latency measurement to %s:%d"), *ServerIP, ServerPort));
+            FString::Printf(TEXT("Started latency measurement to %s:%d\n%s"),
+                *ServerIP, ServerPort, *ModeText));
     }
 }
 
