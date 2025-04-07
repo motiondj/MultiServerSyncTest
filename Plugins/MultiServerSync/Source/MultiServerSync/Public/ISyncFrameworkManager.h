@@ -1,5 +1,4 @@
-﻿// Plugins/MultiServerSync/Source/MultiServerSync/Public/ISyncFrameworkManager.h
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "ModuleInterfaces.h"
@@ -12,6 +11,9 @@ class MULTISERVERSYNC_API ISyncFrameworkManager
 {
 public:
     virtual ~ISyncFrameworkManager() {}
+
+    /** 프레임워크 매니저가 초기화되었는지 확인 */
+    virtual bool IsInitialized() const = 0;
 
     /** Get the environment detector subsystem */
     virtual TSharedPtr<IEnvironmentDetector> GetEnvironmentDetector() const = 0;

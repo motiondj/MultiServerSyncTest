@@ -4,6 +4,7 @@
 #include "MultiServerSync.h"
 #include "ISyncFrameworkManager.h"
 #include "Serialization/BufferArchive.h"
+#include "Serialization/MemoryReader.h" // FMemoryReader 정의를 위해 추가
 #include "IPAddress.h"
 #include "Misc/DateTime.h"
 #include "Misc/Timespan.h"
@@ -544,11 +545,21 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
             HandleCustomMessage(Message, Sender);
             break;
         case ENetworkMessageType::PingRequest:
-            HandlePingRequest(MakeShareable(new FMemoryReader(Message.GetData())), Sender);
-            break;
+        {
+            // 수정된 코드 - FMemoryReader 사용
+            TArray<uint8> DataCopy = Message.GetData();
+            TSharedPtr<FMemoryReader> Reader = MakeShareable(new FMemoryReader(DataCopy));
+            HandlePingRequest(Reader, Sender);
+        }
+        break;
         case ENetworkMessageType::PingResponse:
-            HandlePingResponse(MakeShareable(new FMemoryReader(Message.GetData())), Sender);
-            break;
+        {
+            // 수정된 코드 - FMemoryReader 사용
+            TArray<uint8> DataCopy = Message.GetData();
+            TSharedPtr<FMemoryReader> Reader = MakeShareable(new FMemoryReader(DataCopy));
+            HandlePingResponse(Reader, Sender);
+        }
+        break;
         default:
             UE_LOG(LogMultiServerSync, Warning, TEXT("Unknown message type received: %d"), (int)Message.GetType());
             break;
@@ -2046,60 +2057,6 @@ void FPingMessage::Deserialize(FMemoryReader& Reader)
     Reader << SequenceNumber;
 }
 
-void FNetworkLatencyStats::AddRTTSample(double RTT)
-{
-    // 새 샘플 추가
-    RecentRTTs.Add(RTT);
-    CurrentRTT = RTT;
-
-    // 최대 샘플 수 제한
-    while (RecentRTTs.Num() > 100)
-    {
-        RecentRTTs.RemoveAt(0);
-    }
-
-    // 최소/최대 RTT 업데이트
-    MinRTT = FMath::Min(MinRTT, RTT);
-    MaxRTT = FMath::Max(MaxRTT, RTT);
-
-    // 평균 계산
-    double Sum = 0.0;
-    for (double Sample : RecentRTTs)
-    {
-        Sum += Sample;
-    }
-
-    AvgRTT = Sum / RecentRTTs.Num();
-
-    // 표준 편차 계산
-    double VarianceSum = 0.0;
-    for (double Sample : RecentRTTs)
-    {
-        double Diff = Sample - AvgRTT;
-        VarianceSum += (Diff * Diff);
-    }
-
-    StandardDeviation = FMath::Sqrt(VarianceSum / RecentRTTs.Num());
-
-    // 지터 계산 (연속된 샘플 간의 변화량의 평균)
-    if (RecentRTTs.Num() > 1)
-    {
-        double JitterSum = 0.0;
-        for (int32 i = 1; i < RecentRTTs.Num(); ++i)
-        {
-            JitterSum += FMath::Abs(RecentRTTs[i] - RecentRTTs[i - 1]);
-        }
-
-        Jitter = JitterSum / (RecentRTTs.Num() - 1);
-    }
-
-    // 샘플 수 업데이트
-    SampleCount++;
-
-    // 마지막 업데이트 시간 기록
-    LastUpdateTime = FPlatformTime::Seconds();
-}
-
 // 핑 요청 전송 함수 구현
 uint32 FNetworkManager::SendPingRequest(const FIPv4Endpoint& ServerEndpoint)
 {
@@ -2164,44 +2121,42 @@ void FNetworkManager::SendPingResponse(const FPingMessage& RequestMessage, const
 }
 
 // 핑 요청 처리 함수
-void FNetworkManager::HandlePingRequest(const FArrayReaderPtr& ArrayReaderPtr, const FIPv4Endpoint& SourceEndpoint)
+void FNetworkManager::HandlePingRequest(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint)
 {
     // 요청 메시지 파싱
     FPingMessage RequestMessage;
-    FMemoryReader Reader(*ArrayReaderPtr);
-    RequestMessage.Deserialize(Reader);
+    RequestMessage.Deserialize(*ReaderPtr);
 
     // 응답 전송
-    SendPingResponse(RequestMessage, SourceEndpoint);
+    this->SendPingResponse(RequestMessage, SourceEndpoint);
 }
 
-// 핑 응답 처리 함수
-void FNetworkManager::HandlePingResponse(const FArrayReaderPtr& ArrayReaderPtr, const FIPv4Endpoint& SourceEndpoint)
+// HandlePingResponse 함수 구현 - 매개변수 타입을 FMemoryReader로 변경
+void FNetworkManager::HandlePingResponse(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint)
 {
     // 현재 시간 (초)
     double CurrentTime = FPlatformTime::Seconds();
 
     // 응답 메시지 파싱
     FPingMessage ResponseMessage;
-    FMemoryReader Reader(*ArrayReaderPtr);
-    ResponseMessage.Deserialize(Reader);
+    ResponseMessage.Deserialize(*ReaderPtr);
 
     // 요청 시간 찾기
     uint32 SequenceNumber = ResponseMessage.SequenceNumber;
-    if (PendingPingRequests.Contains(SequenceNumber))
+    if (this->PendingPingRequests.Contains(SequenceNumber))
     {
         // 요청 정보 얻기
-        TPair<FIPv4Endpoint, double> RequestInfo = PendingPingRequests[SequenceNumber];
+        TPair<FIPv4Endpoint, double> RequestInfo = this->PendingPingRequests[SequenceNumber];
         double RequestTime = RequestInfo.Value;
 
         // RTT 계산 (밀리초 단위)
         double RTT = (CurrentTime - RequestTime) * 1000.0;
 
         // 통계 업데이트
-        UpdateRTTStatistics(SourceEndpoint, RTT);
+        this->UpdateRTTStatistics(SourceEndpoint, RTT);
 
         // 요청 목록에서 제거
-        PendingPingRequests.Remove(SequenceNumber);
+        this->PendingPingRequests.Remove(SequenceNumber);
 
         UE_LOG(LogMultiServerSync, Verbose, TEXT("Received ping response from %s (Seq: %u, RTT: %.2f ms)"),
             *SourceEndpoint.ToString(), SequenceNumber, RTT);
@@ -2448,90 +2403,4 @@ void FNetworkManager::StopLatencyMeasurement(const FIPv4Endpoint& ServerEndpoint
         UE_LOG(LogMultiServerSync, Log, TEXT("Latency statistics for %s: Min=%.2f ms, Max=%.2f ms, Avg=%.2f ms, Jitter=%.2f ms, Samples=%d, Lost=%d"),
             *ServerID, Stats.MinRTT, Stats.MaxRTT, Stats.AvgRTT, Stats.Jitter, Stats.SampleCount, Stats.LostPackets);
     }
-}
-
-// FPingMessage 직렬화 함수 구현
-void FPingMessage::Serialize(FMemoryWriter& Writer) const
-{
-    // 메시지 타입 직렬화
-    uint8 TypeValue = static_cast<uint8>(Type);
-    Writer << TypeValue;
-
-    // 타임스탬프 직렬화 - 임시 변수 사용
-    uint64 TempTimestamp = Timestamp;
-    Writer << TempTimestamp;
-
-    // 시퀀스 번호 직렬화 - 임시 변수 사용
-    uint32 TempSeqNum = SequenceNumber;
-    Writer << TempSeqNum;
-}
-
-// FPingMessage 역직렬화 함수 구현
-void FPingMessage::Deserialize(FMemoryReader& Reader)
-{
-    // 메시지 타입 역직렬화
-    uint8 TypeValue;
-    Reader << TypeValue;
-    Type = static_cast<EPingMessageType>(TypeValue);
-
-    // 타임스탬프 역직렬화
-    Reader << Timestamp;
-
-    // 시퀀스 번호 역직렬화
-    Reader << SequenceNumber;
-}
-
-// FNetworkLatencyStats의 샘플 추가 함수 구현
-void FNetworkLatencyStats::AddRTTSample(double RTT)
-{
-    // 새 샘플 추가
-    RecentRTTs.Add(RTT);
-    CurrentRTT = RTT;
-
-    // 최대 샘플 수 제한
-    while (RecentRTTs.Num() > 100)
-    {
-        RecentRTTs.RemoveAt(0);
-    }
-
-    // 최소/최대 RTT 업데이트
-    MinRTT = FMath::Min(MinRTT, RTT);
-    MaxRTT = FMath::Max(MaxRTT, RTT);
-
-    // 평균 계산
-    double Sum = 0.0;
-    for (double Sample : RecentRTTs)
-    {
-        Sum += Sample;
-    }
-
-    AvgRTT = Sum / RecentRTTs.Num();
-
-    // 표준 편차 계산
-    double VarianceSum = 0.0;
-    for (double Sample : RecentRTTs)
-    {
-        double Diff = Sample - AvgRTT;
-        VarianceSum += (Diff * Diff);
-    }
-
-    StandardDeviation = FMath::Sqrt(VarianceSum / RecentRTTs.Num());
-
-    // 지터 계산 (연속된 샘플 간의 변화량의 평균)
-    if (RecentRTTs.Num() > 1)
-    {
-        double JitterSum = 0.0;
-        for (int32 i = 1; i < RecentRTTs.Num(); ++i)
-        {
-            JitterSum += FMath::Abs(RecentRTTs[i] - RecentRTTs[i - 1]);
-        }
-
-        Jitter = JitterSum / (RecentRTTs.Num() - 1);
-    }
-
-    // 샘플 수 업데이트
-    SampleCount++;
-
-    // 마지막 업데이트 시간 기록
-    LastUpdateTime = FPlatformTime::Seconds();
 }

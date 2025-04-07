@@ -1,5 +1,4 @@
-﻿// FSyncFrameworkManager.h
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "ISyncFrameworkManager.h"
@@ -25,6 +24,7 @@ public:
     void Shutdown();
 
     // Begin ISyncFrameworkManager interface
+    virtual bool IsInitialized() const override { return bIsInitialized; }
     virtual TSharedPtr<IEnvironmentDetector> GetEnvironmentDetector() const override;
     virtual TSharedPtr<INetworkManager> GetNetworkManager() const override;
     virtual TSharedPtr<ITimeSync> GetTimeSync() const override;

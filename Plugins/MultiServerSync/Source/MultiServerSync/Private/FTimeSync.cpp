@@ -269,3 +269,28 @@ int32 FTimeSync::GetSyncInterval() const
 {
     return SyncIntervalMs;
 }
+
+int32 FTimeSync::GetSyncStatus() const
+{
+    if (!bIsInitialized)
+        return 0; // 비동기화
+
+    if (bIsMaster)
+        return 2; // 마스터는 항상 동기화됨
+
+    if (bIsSynchronized) {
+        // 오프셋 크기에 따라 상태 판단
+        if (FMath::Abs(TimeOffsetMicroseconds) < 10000) // 10ms 이내
+            return 2; // 동기화됨
+        else
+            return 1; // 동기화 중
+    }
+
+    return 0; // 비동기화
+}
+
+// GeneratePTPTimestamp 함수 추가
+int64 FTimeSync::GeneratePTPTimestamp() const
+{
+    return GetLocalTimeMicroseconds();
+}

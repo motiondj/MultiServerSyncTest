@@ -99,6 +99,15 @@ public:
 
     // Check if time synchronization is currently active
     virtual bool IsSynchronized() = 0;
+
+    // Get time offset in microseconds (for BP interface)
+    virtual int64 GetTimeOffset() const = 0;
+
+    // Get sync status (0: not synced, 1: syncing, 2: synced) 
+    virtual int32 GetSyncStatus() const = 0;
+
+    // Generate PTP timestamp for testing
+    virtual int64 GeneratePTPTimestamp() const = 0;
 };
 
 /**

@@ -1,5 +1,4 @@
-﻿// SyncFrameworkManager.h
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "ISyncFrameworkManager.h"
@@ -8,7 +7,7 @@
  * FMultiServerSyncModule에서 ISyncFrameworkManager를 가져오기 위한 유틸리티 클래스
  * 에디터 모듈에서 런타임 모듈의 프레임워크 매니저에 접근할 수 있게 합니다.
  */
-class MULTISERVERSYNC_API FSyncFrameworkManager
+class MULTISERVERSYNC_API FSyncFrameworkManagerUtil
 {
 public:
     /**

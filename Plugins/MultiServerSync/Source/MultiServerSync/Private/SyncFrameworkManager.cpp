@@ -1,8 +1,7 @@
-﻿// SyncFrameworkManager.cpp
-#include "SyncFrameworkManager.h"
+﻿#include "SyncFrameworkManager.h"
 #include "MultiServerSync.h"
 
-ISyncFrameworkManager* FSyncFrameworkManager::Get()
+ISyncFrameworkManager* FSyncFrameworkManagerUtil::Get()
 {
     TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (FrameworkManager.IsValid())
@@ -12,7 +11,7 @@ ISyncFrameworkManager* FSyncFrameworkManager::Get()
     return nullptr;
 }
 
-bool FSyncFrameworkManager::IsInitialized()
+bool FSyncFrameworkManagerUtil::IsInitialized()
 {
     ISyncFrameworkManager* FrameworkManager = Get();
     return FrameworkManager != nullptr;

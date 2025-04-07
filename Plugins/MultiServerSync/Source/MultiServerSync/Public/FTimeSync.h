@@ -1,5 +1,4 @@
-﻿// FTimeSync.h
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "ModuleInterfaces.h"
@@ -27,6 +26,9 @@ public:
     virtual int64 GetSyncedTimeMicroseconds() override;
     virtual int64 GetEstimatedErrorMicroseconds() override;
     virtual bool IsSynchronized() override;
+    virtual int64 GetTimeOffset() const override { return TimeOffsetMicroseconds; }
+    virtual int32 GetSyncStatus() const override;
+    virtual int64 GeneratePTPTimestamp() const override;
     // End ITimeSync interface
 
     /** Set master mode (true) or slave mode (false) */

@@ -480,8 +480,8 @@ private:
     void HandleSettingsResponseMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
 
     // 핑 메시지 처리 메서드
-    void HandlePingRequest(const FArrayReaderPtr& ArrayReaderPtr, const FIPv4Endpoint& SourceEndpoint);
-    void HandlePingResponse(const FArrayReaderPtr& ArrayReaderPtr, const FIPv4Endpoint& SourceEndpoint);
+    void HandlePingRequest(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint);
+    void HandlePingResponse(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint);
 
     // 마스터 선출 관련 메서드
     void SendElectionVote(const FString& CandidateId);

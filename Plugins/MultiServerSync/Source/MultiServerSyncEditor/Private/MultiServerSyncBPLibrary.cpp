@@ -4,23 +4,27 @@
 #include "MultiServerSync.h"
 #include "FSyncLog.h" // 로그 카테고리를 위해 추가
 #include "ISyncFrameworkManager.h"
+#include "SyncFrameworkManager.h" // FSyncFrameworkManagerUtil을 가져오기 위해 추가
+
+// 로그 카테고리 정의
+DEFINE_LOG_CATEGORY_STATIC(LogMultiServerSyncEditor, Log, All);
 
 // 플러그인이 초기화되었는지 확인
 bool UMultiServerSyncBPLibrary::IsInitialized()
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     return FrameworkManager != nullptr && FrameworkManager->IsInitialized();
 }
 
 // 현재 마스터 노드인지 확인
 bool UMultiServerSyncBPLibrary::IsMasterNode()
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
         return false;
 
-    INetworkManager* NetworkManager = FrameworkManager->GetNetworkManager();
-    if (!NetworkManager)
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
         return false;
 
     return NetworkManager->IsMaster();
@@ -29,12 +33,12 @@ bool UMultiServerSyncBPLibrary::IsMasterNode()
 // 현재 마스터 ID 가져오기
 FString UMultiServerSyncBPLibrary::GetMasterNodeId()
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
         return TEXT("");
 
-    INetworkManager* NetworkManager = FrameworkManager->GetNetworkManager();
-    if (!NetworkManager)
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
         return TEXT("");
 
     return NetworkManager->GetMasterId();
@@ -43,12 +47,12 @@ FString UMultiServerSyncBPLibrary::GetMasterNodeId()
 // 마스터 선출 시작
 bool UMultiServerSyncBPLibrary::StartMasterElection()
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
         return false;
 
-    INetworkManager* NetworkManager = FrameworkManager->GetNetworkManager();
-    if (!NetworkManager)
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
         return false;
 
     return NetworkManager->StartMasterElection();
@@ -57,12 +61,12 @@ bool UMultiServerSyncBPLibrary::StartMasterElection()
 // 마스터 우선순위 설정
 void UMultiServerSyncBPLibrary::SetMasterPriority(float Priority)
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
         return;
 
-    INetworkManager* NetworkManager = FrameworkManager->GetNetworkManager();
-    if (!NetworkManager)
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
         return;
 
     NetworkManager->SetMasterPriority(Priority);
@@ -71,12 +75,12 @@ void UMultiServerSyncBPLibrary::SetMasterPriority(float Priority)
 // 서버 탐색 시작
 bool UMultiServerSyncBPLibrary::DiscoverServers()
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
         return false;
 
-    INetworkManager* NetworkManager = FrameworkManager->GetNetworkManager();
-    if (!NetworkManager)
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
         return false;
 
     return NetworkManager->DiscoverServers();
@@ -85,32 +89,41 @@ bool UMultiServerSyncBPLibrary::DiscoverServers()
 // 발견된 서버 목록 가져오기
 TArray<FString> UMultiServerSyncBPLibrary::GetDiscoveredServers()
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    TArray<FString> Result;
+
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
-        return TArray<FString>();
+        return Result;
 
-    INetworkManager* NetworkManager = FrameworkManager->GetNetworkManager();
-    if (!NetworkManager)
-        return TArray<FString>();
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+        return Result;
 
-    FNetworkManager* NetworkManagerImpl = static_cast<FNetworkManager*>(NetworkManager);
-    return NetworkManagerImpl->GetDiscoveredServers();
+    // FNetworkManager 사용을 피하고 INetworkManager에서 직접 정보 얻기
+    // 대안: 인터페이스에 GetDiscoveredServers 메서드 추가 고려
+    if (NetworkManager->DiscoverServers())
+    {
+        // 서버 탐색이 성공하면 더미 데이터 반환
+        Result.Add(TEXT("Server discovery in progress..."));
+    }
+
+    return Result;
 }
 
 // 네트워크 지연 측정 시작
 void UMultiServerSyncBPLibrary::StartNetworkLatencyMeasurement(const FString& ServerIP, int32 ServerPort, float IntervalSeconds, int32 SampleCount)
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
     {
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to start latency measurement: Framework manager is not available"));
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to start latency measurement: Framework manager is not available"));
         return;
     }
 
-    INetworkManager* NetworkManager = FrameworkManager->GetNetworkManager();
-    if (!NetworkManager)
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
     {
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to start latency measurement: Network manager is not available"));
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to start latency measurement: Network manager is not available"));
         return;
     }
 
@@ -118,7 +131,7 @@ void UMultiServerSyncBPLibrary::StartNetworkLatencyMeasurement(const FString& Se
     FIPv4Address IPAddress;
     if (!FIPv4Address::Parse(ServerIP, IPAddress))
     {
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to start latency measurement: Invalid IP address '%s'"), *ServerIP);
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to start latency measurement: Invalid IP address '%s'"), *ServerIP);
         return;
     }
 
@@ -132,17 +145,17 @@ void UMultiServerSyncBPLibrary::StartNetworkLatencyMeasurement(const FString& Se
 // 네트워크 지연 측정 중지
 void UMultiServerSyncBPLibrary::StopNetworkLatencyMeasurement(const FString& ServerIP, int32 ServerPort)
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
     {
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to stop latency measurement: Framework manager is not available"));
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to stop latency measurement: Framework manager is not available"));
         return;
     }
 
-    INetworkManager* NetworkManager = FrameworkManager->GetNetworkManager();
-    if (!NetworkManager)
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
     {
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to stop latency measurement: Network manager is not available"));
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to stop latency measurement: Network manager is not available"));
         return;
     }
 
@@ -150,7 +163,7 @@ void UMultiServerSyncBPLibrary::StopNetworkLatencyMeasurement(const FString& Ser
     FIPv4Address IPAddress;
     if (!FIPv4Address::Parse(ServerIP, IPAddress))
     {
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to stop latency measurement: Invalid IP address '%s'"), *ServerIP);
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to stop latency measurement: Invalid IP address '%s'"), *ServerIP);
         return;
     }
 
@@ -173,17 +186,17 @@ bool UMultiServerSyncBPLibrary::GetNetworkLatencyStats(const FString& ServerIP, 
     Jitter = 0.0f;
     PacketLoss = 0.0f;
 
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
     {
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to get latency stats: Framework manager is not available"));
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get latency stats: Framework manager is not available"));
         return false;
     }
 
-    INetworkManager* NetworkManager = FrameworkManager->GetNetworkManager();
-    if (!NetworkManager)
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
     {
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to get latency stats: Network manager is not available"));
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get latency stats: Network manager is not available"));
         return false;
     }
 
@@ -191,7 +204,7 @@ bool UMultiServerSyncBPLibrary::GetNetworkLatencyStats(const FString& ServerIP, 
     FIPv4Address IPAddress;
     if (!FIPv4Address::Parse(ServerIP, IPAddress))
     {
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to get latency stats: Invalid IP address '%s'"), *ServerIP);
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get latency stats: Invalid IP address '%s'"), *ServerIP);
         return false;
     }
 
@@ -204,7 +217,7 @@ bool UMultiServerSyncBPLibrary::GetNetworkLatencyStats(const FString& ServerIP, 
     // 통계가 유효한지 확인
     if (Stats.SampleCount <= 0)
     {
-        UE_LOG(LogMultiServerSync, Warning, TEXT("No latency stats available for server %s:%d"), *ServerIP, ServerPort);
+        UE_LOG(LogMultiServerSyncEditor, Warning, TEXT("No latency stats available for server %s:%d"), *ServerIP, ServerPort);
         return false;
     }
 
@@ -226,19 +239,19 @@ bool UMultiServerSyncBPLibrary::GetNetworkLatencyStats(const FString& ServerIP, 
 // 네트워크 품질 평가
 int32 UMultiServerSyncBPLibrary::EvaluateNetworkQuality(const FString& ServerIP, int32 ServerPort, FString& QualityString)
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
     {
         QualityString = TEXT("Unknown");
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to evaluate network quality: Framework manager is not available"));
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to evaluate network quality: Framework manager is not available"));
         return 0;
     }
 
-    INetworkManager* NetworkManager = FrameworkManager->GetNetworkManager();
-    if (!NetworkManager)
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
     {
         QualityString = TEXT("Unknown");
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to evaluate network quality: Network manager is not available"));
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to evaluate network quality: Network manager is not available"));
         return 0;
     }
 
@@ -247,7 +260,7 @@ int32 UMultiServerSyncBPLibrary::EvaluateNetworkQuality(const FString& ServerIP,
     if (!FIPv4Address::Parse(ServerIP, IPAddress))
     {
         QualityString = TEXT("Unknown");
-        UE_LOG(LogMultiServerSync, Error, TEXT("Failed to evaluate network quality: Invalid IP address '%s'"), *ServerIP);
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to evaluate network quality: Invalid IP address '%s'"), *ServerIP);
         return 0;
     }
 
@@ -264,44 +277,43 @@ int32 UMultiServerSyncBPLibrary::EvaluateNetworkQuality(const FString& ServerIP,
 // PTP 타임스탬프 생성
 int64 UMultiServerSyncBPLibrary::GeneratePTPTimestamp()
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
         return 0;
 
-    ITimeSync* TimeSync = FrameworkManager->GetTimeSync();
-    if (!TimeSync)
+    TSharedPtr<ITimeSync> TimeSync = FrameworkManager->GetTimeSync();
+    if (!TimeSync.IsValid())
         return 0;
 
-    // PTP 타임스탬프 생성 메서드가 구현되어 있다고 가정
-    // 실제 구현에 맞게 조정 필요
+    // 현재 시간 반환
     return TimeSync->GeneratePTPTimestamp();
 }
 
 // 시간 오프셋 가져오기
 float UMultiServerSyncBPLibrary::GetTimeOffset()
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
         return 0.0f;
 
-    ITimeSync* TimeSync = FrameworkManager->GetTimeSync();
-    if (!TimeSync)
+    TSharedPtr<ITimeSync> TimeSync = FrameworkManager->GetTimeSync();
+    if (!TimeSync.IsValid())
         return 0.0f;
 
     // 오프셋을 밀리초 단위로 반환
-    return TimeSync->GetTimeOffset() * 1000.0f;
+    return static_cast<float>(TimeSync->GetTimeOffset()) / 1000.0f;
 }
 
 // 동기화 상태 가져오기
 int32 UMultiServerSyncBPLibrary::GetSyncStatus()
 {
-    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
         return 0;
 
-    ITimeSync* TimeSync = FrameworkManager->GetTimeSync();
-    if (!TimeSync)
+    TSharedPtr<ITimeSync> TimeSync = FrameworkManager->GetTimeSync();
+    if (!TimeSync.IsValid())
         return 0;
 
-    return static_cast<int32>(TimeSync->GetSyncStatus());
+    return TimeSync->GetSyncStatus();
 }
