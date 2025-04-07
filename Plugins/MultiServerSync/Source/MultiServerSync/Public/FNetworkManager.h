@@ -11,6 +11,7 @@
 #include "Interfaces/IPv4/IPv4Address.h"
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "Containers/Ticker.h"
+#include "Serialization/ArrayReader.h" // FArrayReaderPtr 정의를 위해 추가
 
 // 메시지 유형 정의
 enum class ENetworkMessageType : uint8
