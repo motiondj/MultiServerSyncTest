@@ -1,6 +1,6 @@
 ﻿// Copyright Your Company. All Rights Reserved.
 
-#include "BP_NetworkLatencyTester.h"
+#include "Components/BP_NetworkLatencyTester.h"
 #include "MultiServerSyncBPLibrary.h"
 #include "TimerManager.h"
 #include "Engine/Engine.h"

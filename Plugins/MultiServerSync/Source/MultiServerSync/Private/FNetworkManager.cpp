@@ -484,8 +484,8 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
     }
 
     // 메시지 역직렬화
-    FNetworkMessage Message;
-    if (Message.Deserialize(Data))
+    FNetworkMessage DeserializedMessage;
+    if (DeserializedMessage.Deserialize(Data))
     {
         // 메시지 유형에 따라 처리
         switch (Message.GetType())

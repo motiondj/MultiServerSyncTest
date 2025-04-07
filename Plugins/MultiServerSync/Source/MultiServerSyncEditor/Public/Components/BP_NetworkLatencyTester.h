@@ -11,7 +11,7 @@
  * 특정 서버의 네트워크 지연 시간을 측정하고 결과를 표시합니다.
  */
 UCLASS(Blueprintable, ClassGroup = (Custom), meta = (BlueprintSpawnableComponent))
-class MULTISERVERSYNC_API UBP_NetworkLatencyTester : public UActorComponent
+class MULTISERVERSYNCEDITOR_API UBP_NetworkLatencyTester : public UActorComponent
 {
     GENERATED_BODY()
 

@@ -23,14 +23,14 @@ public class MultiServerSyncEditor : ModuleRules
         );
 
         PublicDependencyModuleNames.AddRange(
-            new string[]
-            {
-                "Core",
-                "CoreUObject",
-                "Engine",
-                "MultiServerSync" // 런타임 모듈에 대한 의존성
-            }
-        );
+        new string[]
+        {
+            "Core",
+            "CoreUObject",
+            "Engine",
+            "MultiServerSync" // 런타임 모듈에 대한 의존성
+        }
+);
 
         PrivateDependencyModuleNames.AddRange(
             new string[]
@@ -48,12 +48,12 @@ public class MultiServerSyncEditor : ModuleRules
         );
 
         // 모듈 바인딩 설정
-        PrivateIncludePathModuleNames.AddRange(
-            new string[]
-            {
-                "MultiServerSync",
-            }
-        );
+        PrivateIncludePaths.AddRange(
+        new string[] {
+            // 필요한 경우 MultiServerSync 모듈의 헤더 폴더를 명시적으로 포함
+            Path.Combine(ModuleDirectory, "../MultiServerSync/Public"),
+        }
+);
 
         // 제거: DynamicallyLoadedModuleNames 설정 부분 제거
         // 이미 PublicDependencyModuleNames에 "MultiServerSync"가 있으므로 

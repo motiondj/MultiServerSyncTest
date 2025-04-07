@@ -2,21 +2,20 @@
 
 #include "MultiServerSyncBPLibrary.h"
 #include "MultiServerSync.h"
-#include "SyncFrameworkManager.h"
-#include "Interfaces/IPv4/IPv4Address.h"
-#include "Interfaces/IPv4/IPv4Endpoint.h"
+#include "FSyncLog.h" // 로그 카테고리를 위해 추가
+#include "ISyncFrameworkManager.h"
 
 // 플러그인이 초기화되었는지 확인
 bool UMultiServerSyncBPLibrary::IsInitialized()
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     return FrameworkManager != nullptr && FrameworkManager->IsInitialized();
 }
 
 // 현재 마스터 노드인지 확인
 bool UMultiServerSyncBPLibrary::IsMasterNode()
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
         return false;
 
@@ -30,7 +29,7 @@ bool UMultiServerSyncBPLibrary::IsMasterNode()
 // 현재 마스터 ID 가져오기
 FString UMultiServerSyncBPLibrary::GetMasterNodeId()
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
         return TEXT("");
 
@@ -44,7 +43,7 @@ FString UMultiServerSyncBPLibrary::GetMasterNodeId()
 // 마스터 선출 시작
 bool UMultiServerSyncBPLibrary::StartMasterElection()
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
         return false;
 
@@ -58,7 +57,7 @@ bool UMultiServerSyncBPLibrary::StartMasterElection()
 // 마스터 우선순위 설정
 void UMultiServerSyncBPLibrary::SetMasterPriority(float Priority)
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
         return;
 
@@ -72,7 +71,7 @@ void UMultiServerSyncBPLibrary::SetMasterPriority(float Priority)
 // 서버 탐색 시작
 bool UMultiServerSyncBPLibrary::DiscoverServers()
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
         return false;
 
@@ -86,7 +85,7 @@ bool UMultiServerSyncBPLibrary::DiscoverServers()
 // 발견된 서버 목록 가져오기
 TArray<FString> UMultiServerSyncBPLibrary::GetDiscoveredServers()
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
         return TArray<FString>();
 
@@ -101,7 +100,7 @@ TArray<FString> UMultiServerSyncBPLibrary::GetDiscoveredServers()
 // 네트워크 지연 측정 시작
 void UMultiServerSyncBPLibrary::StartNetworkLatencyMeasurement(const FString& ServerIP, int32 ServerPort, float IntervalSeconds, int32 SampleCount)
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to start latency measurement: Framework manager is not available"));
@@ -133,7 +132,7 @@ void UMultiServerSyncBPLibrary::StartNetworkLatencyMeasurement(const FString& Se
 // 네트워크 지연 측정 중지
 void UMultiServerSyncBPLibrary::StopNetworkLatencyMeasurement(const FString& ServerIP, int32 ServerPort)
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to stop latency measurement: Framework manager is not available"));
@@ -174,7 +173,7 @@ bool UMultiServerSyncBPLibrary::GetNetworkLatencyStats(const FString& ServerIP, 
     Jitter = 0.0f;
     PacketLoss = 0.0f;
 
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to get latency stats: Framework manager is not available"));
@@ -227,7 +226,7 @@ bool UMultiServerSyncBPLibrary::GetNetworkLatencyStats(const FString& ServerIP, 
 // 네트워크 품질 평가
 int32 UMultiServerSyncBPLibrary::EvaluateNetworkQuality(const FString& ServerIP, int32 ServerPort, FString& QualityString)
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
     {
         QualityString = TEXT("Unknown");
@@ -265,7 +264,7 @@ int32 UMultiServerSyncBPLibrary::EvaluateNetworkQuality(const FString& ServerIP,
 // PTP 타임스탬프 생성
 int64 UMultiServerSyncBPLibrary::GeneratePTPTimestamp()
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
         return 0;
 
@@ -281,7 +280,7 @@ int64 UMultiServerSyncBPLibrary::GeneratePTPTimestamp()
 // 시간 오프셋 가져오기
 float UMultiServerSyncBPLibrary::GetTimeOffset()
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
         return 0.0f;
 
@@ -296,7 +295,7 @@ float UMultiServerSyncBPLibrary::GetTimeOffset()
 // 동기화 상태 가져오기
 int32 UMultiServerSyncBPLibrary::GetSyncStatus()
 {
-    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManager::Get();
+    TSharedPtr<ISyncFrameworkManager> FrameworkManager = FMultiServerSyncModule::GetFrameworkManager();
     if (!FrameworkManager)
         return 0;
 

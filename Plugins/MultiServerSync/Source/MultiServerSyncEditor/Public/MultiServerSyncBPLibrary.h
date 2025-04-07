@@ -4,6 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+// 여기에 필요한 추가 헤더들을 포함하세요
+
+// 항상 generated.h 파일이 마지막 include가 되어야 합니다
 #include "MultiServerSyncBPLibrary.generated.h"
 
 /**
@@ -11,7 +14,7 @@
  * 블루프린트에서 멀티서버 동기화 기능에 접근할 수 있는 함수들을 제공합니다.
  */
 UCLASS()
-class MULTISERVERSYNC_API UMultiServerSyncBPLibrary : public UBlueprintFunctionLibrary
+class MULTISERVERSYNCEDITOR_API UMultiServerSyncBPLibrary : public UBlueprintFunctionLibrary
 {
     GENERATED_BODY()
 
