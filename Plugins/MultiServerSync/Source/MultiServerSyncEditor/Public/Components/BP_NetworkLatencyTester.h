@@ -67,11 +67,36 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Network Latency")
     float PacketLoss;
 
+    // 백분위수 통계
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency")
+    float Percentile50;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency")
+    float Percentile95;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency")
+    float Percentile99;
+
     UPROPERTY(BlueprintReadOnly, Category = "Network Latency")
     FString NetworkQuality;
 
     UPROPERTY(BlueprintReadOnly, Category = "Network Latency")
     int32 QualityLevel;
+
+    // 이상치 통계
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Outliers")
+    int32 OutliersDetected;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Network Latency|Outliers")
+    float OutlierThreshold;
+
+    // 이상치 필터링 설정
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Network Latency|Outliers")
+    bool bEnableOutlierFiltering;
+
+    // 이상치 필터링 설정 변경
+    UFUNCTION(BlueprintCallable, Category = "Network Latency|Outliers")
+    void SetOutlierFiltering(bool bEnable);
 
 protected:
     // 컴포넌트 초기화 시 호출

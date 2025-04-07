@@ -29,8 +29,16 @@ UBP_NetworkLatencyTester::UBP_NetworkLatencyTester()
     AvgRTT = 0.0f;
     Jitter = 0.0f;
     PacketLoss = 0.0f;
+    Percentile50 = 0.0f;
+    Percentile95 = 0.0f;
+    Percentile99 = 0.0f;
     NetworkQuality = TEXT("Unknown");
     QualityLevel = 0;
+
+    // 이상치 통계 초기값
+    OutliersDetected = 0;
+    OutlierThreshold = 0.0f;
+    bEnableOutlierFiltering = true;
 }
 
 // 컴포넌트 초기화
@@ -93,6 +101,9 @@ void UBP_NetworkLatencyTester::StartMeasurement()
 
     bMeasurementActive = true;
 
+    // 측정 시작 후 이상치 필터링 설정 적용
+    UMultiServerSyncBPLibrary::SetOutlierFiltering(ServerIP, ServerPort, bEnableOutlierFiltering);
+
     // 로그 출력
     UE_LOG(LogTemp, Log, TEXT("Started network latency measurement to %s:%d (Interval: %.2f seconds, Dynamic: %s)"),
         *ServerIP, ServerPort, MeasurementInterval, bDynamicSampling ? TEXT("true") : TEXT("false"));
@@ -146,12 +157,18 @@ void UBP_NetworkLatencyTester::UpdateStats()
         MaxRTT,
         AvgRTT,
         Jitter,
-        PacketLoss);
+        PacketLoss,
+        Percentile50,
+        Percentile95,
+        Percentile99);
 
     if (bSuccess)
     {
         // 네트워크 품질 평가
         QualityLevel = UMultiServerSyncBPLibrary::EvaluateNetworkQuality(ServerIP, ServerPort, NetworkQuality);
+
+        // 이상치 통계 업데이트
+        UMultiServerSyncBPLibrary::GetOutlierStats(ServerIP, ServerPort, OutliersDetected, OutlierThreshold);
     }
 }
 
@@ -165,16 +182,41 @@ void UBP_NetworkLatencyTester::PrintCurrentStats()
     }
 
     // 로그에 통계 출력
-    UE_LOG(LogTemp, Log, TEXT("Latency stats for %s:%d - Min: %.2f ms, Max: %.2f ms, Avg: %.2f ms, Jitter: %.2f ms, Loss: %.2f%%, Quality: %s"),
-        *ServerIP, ServerPort, MinRTT, MaxRTT, AvgRTT, Jitter, PacketLoss * 100.0f, *NetworkQuality);
+    UE_LOG(LogTemp, Log, TEXT("Latency stats for %s:%d - Min: %.2f ms, Max: %.2f ms, Avg: %.2f ms, Jitter: %.2f ms, Loss: %.2f%%, P50/P95/P99: %.2f/%.2f/%.2f ms, Outliers: %d, Quality: %s"),
+        *ServerIP, ServerPort, MinRTT, MaxRTT, AvgRTT, Jitter, PacketLoss * 100.0f,
+        Percentile50, Percentile95, Percentile99, OutliersDetected, *NetworkQuality);
 
     // 화면에도 표시
     if (GEngine)
     {
         FString StatsMessage = FString::Printf(
-            TEXT("Server %s:%d\nRTT: %.2f ms (%.2f-%.2f ms)\nJitter: %.2f ms\nLoss: %.2f%%\nQuality: %s"),
-            *ServerIP, ServerPort, AvgRTT, MinRTT, MaxRTT, Jitter, PacketLoss * 100.0f, *NetworkQuality);
+            TEXT("Server %s:%d\nRTT: %.2f ms (%.2f-%.2f ms)\nJitter: %.2f ms\nLoss: %.2f%%\nP50/P95/P99: %.2f/%.2f/%.2f ms\nOutliers: %d (Threshold: %.2f ms)\nQuality: %s"),
+            *ServerIP, ServerPort, AvgRTT, MinRTT, MaxRTT, Jitter, PacketLoss * 100.0f,
+            Percentile50, Percentile95, Percentile99, OutliersDetected, OutlierThreshold, *NetworkQuality);
 
         GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Cyan, StatsMessage);
+    }
+}
+
+// 이상치 필터링 설정
+void UBP_NetworkLatencyTester::SetOutlierFiltering(bool bEnable)
+{
+    bEnableOutlierFiltering = bEnable;
+
+    if (bMeasurementActive)
+    {
+        UMultiServerSyncBPLibrary::SetOutlierFiltering(ServerIP, ServerPort, bEnable);
+
+        // 로그에 설정 변경 출력
+        UE_LOG(LogTemp, Log, TEXT("Outlier filtering for %s:%d: %s"),
+            *ServerIP, ServerPort, bEnable ? TEXT("Enabled") : TEXT("Disabled"));
+
+        // 화면에도 표시
+        if (GEngine)
+        {
+            GEngine->AddOnScreenDebugMessage(-1, 3.0f,
+                bEnable ? FColor::Green : FColor::Orange,
+                FString::Printf(TEXT("Outlier filtering: %s"), bEnable ? TEXT("Enabled") : TEXT("Disabled")));
+        }
     }
 }

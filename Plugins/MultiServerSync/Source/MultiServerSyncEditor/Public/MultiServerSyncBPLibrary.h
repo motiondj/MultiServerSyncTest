@@ -106,12 +106,73 @@ public:
      * @param AvgRTT 평균 왕복 시간 (ms)
      * @param Jitter 지터 (ms)
      * @param PacketLoss 패킷 손실 비율 (0.0 ~ 1.0)
+     * @param Percentile50 50번째 백분위수 (중앙값) (ms)
+     * @param Percentile95 95번째 백분위수 (ms)
+     * @param Percentile99 99번째 백분위수 (ms)
      * @return 통계가 유효한지 여부
      */
     UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
     static bool GetNetworkLatencyStats(const FString& ServerIP, int32 ServerPort,
         float& MinRTT, float& MaxRTT, float& AvgRTT,
-        float& Jitter, float& PacketLoss);
+        float& Jitter, float& PacketLoss,
+        float& Percentile50, float& Percentile95, float& Percentile99);
+
+    /**
+     * 이상치 필터링 설정을 변경합니다.
+     * @param ServerIP 서버 IP 주소
+     * @param ServerPort 서버 포트
+     * @param bEnableFiltering 필터링 활성화 여부
+     */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static void SetOutlierFiltering(const FString& ServerIP, int32 ServerPort, bool bEnableFiltering);
+
+    /**
+     * 이상치 통계를 가져옵니다.
+     * @param ServerIP 서버 IP 주소
+     * @param ServerPort 서버 포트
+     * @param OutliersDetected 감지된 이상치 수
+     * @param OutlierThreshold 이상치 임계값 (ms)
+     * @return 통계가 유효한지 여부
+     */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static bool GetOutlierStats(const FString& ServerIP, int32 ServerPort, int32& OutliersDetected, float& OutlierThreshold);
+
+    /**
+ * 시계열 샘플링 간격을 설정합니다.
+ * @param ServerIP 서버 IP 주소
+ * @param ServerPort 서버 포트
+ * @param IntervalSeconds 샘플링 간격 (초)
+ */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static void SetTimeSeriesSampleInterval(const FString& ServerIP, int32 ServerPort, float IntervalSeconds);
+
+    /**
+     * 시계열 데이터를 가져옵니다. (간소화된 버전)
+     * @param ServerIP 서버 IP 주소
+     * @param ServerPort 서버 포트
+     * @param OutTimestamps 타임스탬프 배열 (초)
+     * @param OutRTTValues RTT 값 배열 (ms)
+     * @return 데이터가 유효한지 여부
+     */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static bool GetTimeSeriesData(const FString& ServerIP, int32 ServerPort,
+        TArray<float>& OutTimestamps, TArray<float>& OutRTTValues);
+
+    /**
+     * 네트워크 추세 분석 결과를 가져옵니다.
+     * @param ServerIP 서버 IP 주소
+     * @param ServerPort 서버 포트
+     * @param ShortTermTrend 단기 추세 (양수: 악화, 음수: 개선)
+     * @param LongTermTrend 장기 추세 (양수: 악화, 음수: 개선)
+     * @param Volatility 변동성 (값이 클수록 불안정)
+     * @param TimeSinceWorstRTT 최악의 RTT 이후 경과 시간 (초)
+     * @param TimeSinceBestRTT 최상의 RTT 이후 경과 시간 (초)
+     * @return 데이터가 유효한지 여부
+     */
+    UFUNCTION(BlueprintCallable, Category = "MultiServerSync|Network")
+    static bool GetNetworkTrendAnalysis(const FString& ServerIP, int32 ServerPort,
+        float& ShortTermTrend, float& LongTermTrend, float& Volatility,
+        float& TimeSinceWorstRTT, float& TimeSinceBestRTT);
 
     /**
      * 특정 서버의 네트워크 품질을 평가합니다.

@@ -75,6 +75,15 @@ public:
     virtual FNetworkLatencyStats GetLatencyStats(const FIPv4Endpoint& ServerEndpoint) const = 0;
     virtual int32 EvaluateNetworkQuality(const FIPv4Endpoint& ServerEndpoint) const = 0;
     virtual FString GetNetworkQualityString(const FIPv4Endpoint& ServerEndpoint) const = 0;
+
+    // 이상치 필터링 관련 메서드 추가
+    virtual void SetOutlierFiltering(const FIPv4Endpoint& ServerEndpoint, bool bEnableFiltering) = 0;
+    virtual bool GetOutlierStats(const FIPv4Endpoint& ServerEndpoint, int32& OutliersDetected, double& OutlierThreshold) const = 0;
+
+    // 시계열 관련 메서드
+    virtual void SetTimeSeriesSampleInterval(const FIPv4Endpoint& ServerEndpoint, double IntervalSeconds) = 0;
+    virtual bool GetTimeSeriesData(const FIPv4Endpoint& ServerEndpoint, TArray<FLatencyTimeSeriesSample>& OutTimeSeries) const = 0;
+    virtual bool GetNetworkTrendAnalysis(const FIPv4Endpoint& ServerEndpoint, FNetworkTrendAnalysis& OutTrendAnalysis) const = 0;
 };
 
 /**

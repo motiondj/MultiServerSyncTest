@@ -298,6 +298,45 @@ public:
     virtual FString GetNetworkQualityString(const FIPv4Endpoint& ServerEndpoint) const override;
     // End INetworkManager interface
 
+    /**
+     * 이상치 필터링 설정을 변경합니다.
+     * @param ServerEndpoint 서버 엔드포인트
+     * @param bEnableFiltering 필터링 활성화 여부
+     */
+    void SetOutlierFiltering(const FIPv4Endpoint& ServerEndpoint, bool bEnableFiltering);
+
+    /**
+     * 이상치 통계를 가져옵니다.
+     * @param ServerEndpoint 서버 엔드포인트
+     * @param OutliersDetected 감지된 이상치 수
+     * @param OutlierThreshold 이상치 임계값
+     * @return 통계가 유효한지 여부
+     */
+    bool GetOutlierStats(const FIPv4Endpoint& ServerEndpoint, int32& OutliersDetected, double& OutlierThreshold) const;
+
+    /**
+     * 시계열 샘플링 간격을 설정합니다.
+     * @param ServerEndpoint 서버 엔드포인트
+     * @param IntervalSeconds 샘플링 간격 (초)
+     */
+    void SetTimeSeriesSampleInterval(const FIPv4Endpoint& ServerEndpoint, double IntervalSeconds);
+
+    /**
+     * 시계열 데이터를 가져옵니다.
+     * @param ServerEndpoint 서버 엔드포인트
+     * @param OutTimeSeries 시계열 데이터가 저장될 배열
+     * @return 데이터가 유효한지 여부
+     */
+    bool GetTimeSeriesData(const FIPv4Endpoint& ServerEndpoint, TArray<FLatencyTimeSeriesSample>& OutTimeSeries) const;
+
+    /**
+     * 추세 분석 결과를 가져옵니다.
+     * @param ServerEndpoint 서버 엔드포인트
+     * @param OutTrendAnalysis 추세 분석 결과가 저장될 구조체
+     * @return 데이터가 유효한지 여부
+     */
+    bool GetNetworkTrendAnalysis(const FIPv4Endpoint& ServerEndpoint, FNetworkTrendAnalysis& OutTrendAnalysis) const;
+
     /** Get the list of discovered servers */
     TArray<FString> GetDiscoveredServers() const;
 

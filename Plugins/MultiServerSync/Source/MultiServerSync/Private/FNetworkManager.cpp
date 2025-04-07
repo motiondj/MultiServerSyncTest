@@ -2639,3 +2639,84 @@ void FNetworkManager::ResetConsecutiveTimeouts(const FIPv4Endpoint& ServerEndpoi
         }
     }
 }
+
+// 이상치 필터링 설정
+void FNetworkManager::SetOutlierFiltering(const FIPv4Endpoint& ServerEndpoint, bool bEnableFiltering)
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (ServerLatencyStats.Contains(ServerID))
+    {
+        ServerLatencyStats[ServerID].bFilterOutliers = bEnableFiltering;
+
+        UE_LOG(LogMultiServerSync, Display, TEXT("Outlier filtering for %s: %s"),
+            *ServerID, bEnableFiltering ? TEXT("Enabled") : TEXT("Disabled"));
+    }
+}
+
+// 이상치 통계 가져오기
+bool FNetworkManager::GetOutlierStats(const FIPv4Endpoint& ServerEndpoint, int32& OutliersDetected, double& OutlierThreshold) const
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (!ServerLatencyStats.Contains(ServerID))
+    {
+        OutliersDetected = 0;
+        OutlierThreshold = 0.0;
+        return false;
+    }
+
+    const FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+    OutliersDetected = Stats.OutliersDetected;
+    OutlierThreshold = Stats.OutlierThreshold;
+
+    return true;
+}
+
+// 시계열 샘플링 간격 설정
+void FNetworkManager::SetTimeSeriesSampleInterval(const FIPv4Endpoint& ServerEndpoint, double IntervalSeconds)
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (ServerLatencyStats.Contains(ServerID))
+    {
+        ServerLatencyStats[ServerID].SetTimeSeriesSampleInterval(IntervalSeconds);
+
+        UE_LOG(LogMultiServerSync, Display, TEXT("Time series sampling interval for %s set to %.2f seconds"),
+            *ServerID, IntervalSeconds);
+    }
+}
+
+// 시계열 데이터 가져오기
+bool FNetworkManager::GetTimeSeriesData(const FIPv4Endpoint& ServerEndpoint, TArray<FLatencyTimeSeriesSample>& OutTimeSeries) const
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (!ServerLatencyStats.Contains(ServerID))
+    {
+        OutTimeSeries.Empty();
+        return false;
+    }
+
+    const FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+    OutTimeSeries = Stats.GetTimeSeries();
+
+    return OutTimeSeries.Num() > 0;
+}
+
+// 추세 분석 결과 가져오기
+bool FNetworkManager::GetNetworkTrendAnalysis(const FIPv4Endpoint& ServerEndpoint, FNetworkTrendAnalysis& OutTrendAnalysis) const
+{
+    FString ServerID = ServerEndpoint.ToString();
+
+    if (!ServerLatencyStats.Contains(ServerID))
+    {
+        OutTrendAnalysis = FNetworkTrendAnalysis();
+        return false;
+    }
+
+    const FNetworkLatencyStats& Stats = ServerLatencyStats[ServerID];
+    OutTrendAnalysis = Stats.GetTrendAnalysis();
+
+    return true;
+}

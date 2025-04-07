@@ -111,7 +111,6 @@ TArray<FString> UMultiServerSyncBPLibrary::GetDiscoveredServers()
 }
 
 // 네트워크 지연 측정 시작
-// 약 142줄 근처, StartNetworkLatencyMeasurement 함수 구현 수정
 void UMultiServerSyncBPLibrary::StartNetworkLatencyMeasurement(
     const FString& ServerIP,
     int32 ServerPort,
@@ -193,7 +192,8 @@ void UMultiServerSyncBPLibrary::StopNetworkLatencyMeasurement(const FString& Ser
 // 네트워크 지연 통계 가져오기
 bool UMultiServerSyncBPLibrary::GetNetworkLatencyStats(const FString& ServerIP, int32 ServerPort,
     float& MinRTT, float& MaxRTT, float& AvgRTT,
-    float& Jitter, float& PacketLoss)
+    float& Jitter, float& PacketLoss,
+    float& Percentile50, float& Percentile95, float& Percentile99)
 {
     // 초기값 설정
     MinRTT = 0.0f;
@@ -201,6 +201,9 @@ bool UMultiServerSyncBPLibrary::GetNetworkLatencyStats(const FString& ServerIP, 
     AvgRTT = 0.0f;
     Jitter = 0.0f;
     PacketLoss = 0.0f;
+    Percentile50 = 0.0f;
+    Percentile95 = 0.0f;
+    Percentile99 = 0.0f;
 
     ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
     if (!FrameworkManager)
@@ -242,12 +245,233 @@ bool UMultiServerSyncBPLibrary::GetNetworkLatencyStats(const FString& ServerIP, 
     MaxRTT = static_cast<float>(Stats.MaxRTT);
     AvgRTT = static_cast<float>(Stats.AvgRTT);
     Jitter = static_cast<float>(Stats.Jitter);
+    Percentile50 = static_cast<float>(Stats.Percentile50);
+    Percentile95 = static_cast<float>(Stats.Percentile95);
+    Percentile99 = static_cast<float>(Stats.Percentile99);
 
     // 패킷 손실율 계산
     if (Stats.SampleCount + Stats.LostPackets > 0)
     {
         PacketLoss = static_cast<float>(Stats.LostPackets) / (Stats.SampleCount + Stats.LostPackets);
     }
+
+    return true;
+}
+
+// 이상치 필터링 설정
+void UMultiServerSyncBPLibrary::SetOutlierFiltering(const FString& ServerIP, int32 ServerPort, bool bEnableFiltering)
+{
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set outlier filtering: Framework manager is not available"));
+        return;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set outlier filtering: Network manager is not available"));
+        return;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set outlier filtering: Invalid IP address '%s'"), *ServerIP);
+        return;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 이상치 필터링 설정
+    NetworkManager->SetOutlierFiltering(ServerEndpoint, bEnableFiltering);
+}
+
+// 이상치 통계 가져오기
+bool UMultiServerSyncBPLibrary::GetOutlierStats(const FString& ServerIP, int32 ServerPort, int32& OutliersDetected, float& OutlierThreshold)
+{
+    // 초기값 설정
+    OutliersDetected = 0;
+    OutlierThreshold = 0.0f;
+
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get outlier stats: Framework manager is not available"));
+        return false;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get outlier stats: Network manager is not available"));
+        return false;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get outlier stats: Invalid IP address '%s'"), *ServerIP);
+        return false;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 이상치 통계 가져오기
+    double ThresholdValue = 0.0;
+    bool bSuccess = NetworkManager->GetOutlierStats(ServerEndpoint, OutliersDetected, ThresholdValue);
+
+    // double에서 float로 변환
+    OutlierThreshold = static_cast<float>(ThresholdValue);
+
+    return bSuccess;
+}
+
+// 시계열 샘플링 간격 설정
+void UMultiServerSyncBPLibrary::SetTimeSeriesSampleInterval(const FString& ServerIP, int32 ServerPort, float IntervalSeconds)
+{
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set time series interval: Framework manager is not available"));
+        return;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set time series interval: Network manager is not available"));
+        return;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to set time series interval: Invalid IP address '%s'"), *ServerIP);
+        return;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 샘플링 간격 설정
+    NetworkManager->SetTimeSeriesSampleInterval(ServerEndpoint, static_cast<double>(IntervalSeconds));
+}
+
+// 시계열 데이터 가져오기 (간소화된 블루프린트용 버전)
+bool UMultiServerSyncBPLibrary::GetTimeSeriesData(const FString& ServerIP, int32 ServerPort,
+    TArray<float>& OutTimestamps, TArray<float>& OutRTTValues)
+{
+    // 초기화
+    OutTimestamps.Empty();
+    OutRTTValues.Empty();
+
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get time series data: Framework manager is not available"));
+        return false;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get time series data: Network manager is not available"));
+        return false;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get time series data: Invalid IP address '%s'"), *ServerIP);
+        return false;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 전체 시계열 데이터 가져오기
+    TArray<FLatencyTimeSeriesSample> TimeSeries;
+    bool bSuccess = NetworkManager->GetTimeSeriesData(ServerEndpoint, TimeSeries);
+
+    if (!bSuccess || TimeSeries.Num() == 0)
+    {
+        return false;
+    }
+
+    // 마지막 타임스탬프를 기준으로 상대 시간으로 변환 (시각화 용이성)
+    double LastTimestamp = TimeSeries.Last().Timestamp;
+
+    // 블루프린트에서 사용 가능한 형태로 변환
+    for (const FLatencyTimeSeriesSample& Sample : TimeSeries)
+    {
+        // 상대 시간으로 변환 (초, 마지막 샘플로부터 경과 시간)
+        OutTimestamps.Add(static_cast<float>(Sample.Timestamp - LastTimestamp));
+        OutRTTValues.Add(static_cast<float>(Sample.RTT));
+    }
+
+    return true;
+}
+
+// 네트워크 추세 분석 결과 가져오기
+bool UMultiServerSyncBPLibrary::GetNetworkTrendAnalysis(const FString& ServerIP, int32 ServerPort,
+    float& ShortTermTrend, float& LongTermTrend, float& Volatility,
+    float& TimeSinceWorstRTT, float& TimeSinceBestRTT)
+{
+    // 초기화
+    ShortTermTrend = 0.0f;
+    LongTermTrend = 0.0f;
+    Volatility = 0.0f;
+    TimeSinceWorstRTT = 0.0f;
+    TimeSinceBestRTT = 0.0f;
+
+    ISyncFrameworkManager* FrameworkManager = FSyncFrameworkManagerUtil::Get();
+    if (!FrameworkManager)
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get trend analysis: Framework manager is not available"));
+        return false;
+    }
+
+    TSharedPtr<INetworkManager> NetworkManager = FrameworkManager->GetNetworkManager();
+    if (!NetworkManager.IsValid())
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get trend analysis: Network manager is not available"));
+        return false;
+    }
+
+    // IP 주소 파싱
+    FIPv4Address IPAddress;
+    if (!FIPv4Address::Parse(ServerIP, IPAddress))
+    {
+        UE_LOG(LogMultiServerSyncEditor, Error, TEXT("Failed to get trend analysis: Invalid IP address '%s'"), *ServerIP);
+        return false;
+    }
+
+    // 엔드포인트 생성
+    FIPv4Endpoint ServerEndpoint(IPAddress, static_cast<uint16>(ServerPort));
+
+    // 추세 분석 결과 가져오기
+    FNetworkTrendAnalysis TrendAnalysis;
+    bool bSuccess = NetworkManager->GetNetworkTrendAnalysis(ServerEndpoint, TrendAnalysis);
+
+    if (!bSuccess)
+    {
+        return false;
+    }
+
+    // 결과를 블루프린트 변수에 복사
+    ShortTermTrend = static_cast<float>(TrendAnalysis.ShortTermTrend);
+    LongTermTrend = static_cast<float>(TrendAnalysis.LongTermTrend);
+    Volatility = static_cast<float>(TrendAnalysis.Volatility);
+    TimeSinceWorstRTT = static_cast<float>(TrendAnalysis.TimeSinceWorstRTT);
+    TimeSinceBestRTT = static_cast<float>(TrendAnalysis.TimeSinceBestRTT);
 
     return true;
 }
