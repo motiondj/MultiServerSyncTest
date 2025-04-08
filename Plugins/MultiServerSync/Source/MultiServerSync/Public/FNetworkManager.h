@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "NetworkTypes.h"
 #include "ModuleInterfaces.h"
 #include "Common/UdpSocketBuilder.h"
 #include "Sockets.h"
@@ -12,41 +13,6 @@
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "Containers/Ticker.h"
 #include "Serialization/ArrayReader.h" // FArrayReaderPtr 정의를 위해 추가
-
-// 메시지 유형 정의
-enum class ENetworkMessageType : uint8
-{
-    Discovery = 0,    // 서버 탐색 메시지
-    DiscoveryResponse = 1, // 탐색 응답 메시지
-    TimeSync = 2,     // 시간 동기화 메시지
-    FrameSync = 3,    // 프레임 동기화 메시지
-    Command = 4,      // 일반 명령 메시지
-    Data = 5,         // 데이터 전송 메시지
-
-    // 마스터-슬레이브 프로토콜 관련 메시지
-    MasterAnnouncement = 10,  // 마스터가 자신의 상태를 알림
-    MasterQuery = 11,         // 마스터 정보 요청
-    MasterResponse = 12,      // 마스터 정보 응답
-    MasterElection = 13,      // 마스터 선출 시작
-    MasterVote = 14,          // 마스터 선출 투표
-    MasterResign = 15,        // 마스터 사임 알림
-    RoleChange = 16,          // 역할 변경 알림
-
-    // 설정 공유 관련 메시지
-    SettingsSync = 20,        // 설정 동기화 메시지
-    SettingsRequest = 21,     // 설정 요청 메시지
-    SettingsResponse = 22,    // 설정 응답 메시지
-
-    // 핑 관련 메시지
-    PingRequest = 30,         // 핑 요청 메시지
-    PingResponse = 31,        // 핑 응답 메시지
-
-    // ACK 관련 메시지(새로 추가)
-    ACK = 40,                // 확인 응답 메시지
-    Retransmit = 41,         // 재전송 요청 메시지
-
-    Custom = 255      // 사용자 정의 메시지
-};
 
 // 핑 메시지 유형 열거형
 enum class EPingMessageType : uint8
