@@ -334,6 +334,46 @@ bool FNetworkManager::Initialize()
         PingTimeoutCheckHandle.Reset();
     }
 
+    // 메시지 재전송 틱 해제
+    if (MessageRetryTickHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(MessageRetryTickHandle);
+        MessageRetryTickHandle.Reset();
+    }
+
+    // 확인 대기 중인 메시지 정리
+    PendingAcknowledgements.Empty();
+    EndpointSequenceMap.Empty();
+
+    // 메시지 재전송 틱 추가
+    if (MessageRetryTickHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(MessageRetryTickHandle);
+        MessageRetryTickHandle.Reset();
+    }
+
+    FTickerDelegate RetryTickDelegate = FTickerDelegate::CreateRaw(this, &FNetworkManager::CheckMessageRetries);
+    MessageRetryTickHandle = FTSTicker::GetCoreTicker().AddTicker(RetryTickDelegate, MESSAGE_RETRY_INTERVAL);
+
+    // 메시지 확인 관련 변수 초기화
+    LastRetryCheckTime = FPlatformTime::Seconds();
+    PendingAcknowledgements.Empty();
+    EndpointSequenceMap.Empty();
+
+    // 시퀀스 관리 초기화
+    bOrderGuaranteedEnabled = false;
+    EndpointSequenceTrackers.Empty();
+
+    // 시퀀스 관리 틱 추가
+    if (SequenceManagementTickHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(SequenceManagementTickHandle);
+        SequenceManagementTickHandle.Reset();
+    }
+
+    FTickerDelegate SequenceTickDelegate = FTickerDelegate::CreateRaw(this, &FNetworkManager::CheckSequenceManagement);
+    SequenceManagementTickHandle = FTSTicker::GetCoreTicker().AddTicker(SequenceTickDelegate, SEQUENCE_MANAGEMENT_INTERVAL);
+
     return true;
 }
 
@@ -434,6 +474,16 @@ void FNetworkManager::Shutdown()
         FTSTicker::GetCoreTicker().RemoveTicker(QualityAssessmentTickHandle);
         QualityAssessmentTickHandle.Reset();
     }
+
+    // 시퀀스 관리 틱 해제
+    if (SequenceManagementTickHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(SequenceManagementTickHandle);
+        SequenceManagementTickHandle.Reset();
+    }
+
+    // 시퀀스 추적 정보 정리
+    EndpointSequenceTrackers.Empty();
 }
 
 bool FNetworkManager::SendMessage(const FString& EndpointId, const TArray<uint8>& Message)
@@ -526,6 +576,18 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
     FNetworkMessage DeserializedMessage;
     if (DeserializedMessage.Deserialize(Data))
     {
+        // 메시지 순서 확인 (일부 메시지 유형은 제외)
+        if (Message.GetType() != ENetworkMessageType::Discovery &&
+            Message.GetType() != ENetworkMessageType::DiscoveryResponse &&
+            Message.GetType() != ENetworkMessageType::MessageAck &&
+            Message.GetType() != ENetworkMessageType::MessageRetry)
+        {
+            if (!ShouldProcessMessage(Sender, Message.GetSequenceNumber()))
+            {
+                return; // 순서가 맞지 않는 메시지는 처리하지 않음
+            }
+        }
+
         // 메시지 유형에 따라 처리
         switch (Message.GetType())
         {
@@ -590,14 +652,12 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
             HandlePingRequest(Reader, Sender);
         }
         break;
-        case ENetworkMessageType::PingResponse:
-        {
-            // 수정된 코드 - FMemoryReader 사용
-            TArray<uint8> DataCopy = Message.GetData();
-            TSharedPtr<FMemoryReader> Reader = MakeShareable(new FMemoryReader(DataCopy));
-            HandlePingResponse(Reader, Sender);
-        }
-        break;
+        case ENetworkMessageType::MessageAck:
+            HandleMessageAck(Message, Sender);
+            break;
+        case ENetworkMessageType::MessageRetry:
+            HandleMessageRetryRequest(Message, Sender);
+            break;
         default:
             UE_LOG(LogMultiServerSync, Warning, TEXT("Unknown message type received: %d"), (int)Message.GetType());
             break;
@@ -1220,12 +1280,50 @@ void FNetworkManager::HandleDataMessage(const FNetworkMessage& Message, const FI
 {
     // 데이터 메시지 처리 (HandleCommandMessage와 동일한 로직)
     HandleCommandMessage(Message, Sender);
+
+    if (Message.GetFlags() & 1) // Flag = 1: ACK 필요
+    {
+        // ACK 메시지 생성
+        TArray<uint8> AckData;
+        uint16 SequenceNumber = Message.GetSequenceNumber();
+        AckData.SetNum(sizeof(uint16));
+        FMemory::Memcpy(AckData.GetData(), &SequenceNumber, sizeof(uint16));
+
+        FNetworkMessage AckMessage(ENetworkMessageType::MessageAck, AckData);
+        AckMessage.SetProjectId(ProjectId);
+        AckMessage.SetSequenceNumber(GetNextSequenceNumber());
+
+        // ACK 메시지 전송
+        SendMessageToEndpoint(Sender, AckMessage);
+
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent ACK for message (Seq: %u, to: %s)"),
+            SequenceNumber, *Sender.ToString());
+    }
 }
 
 void FNetworkManager::HandleCustomMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
 {
     // 사용자 정의 메시지 처리 (HandleCommandMessage와 동일한 로직)
     HandleCommandMessage(Message, Sender);
+
+    if (Message.GetFlags() & 1) // Flag = 1: ACK 필요
+    {
+        // ACK 메시지 생성
+        TArray<uint8> AckData;
+        uint16 SequenceNumber = Message.GetSequenceNumber();
+        AckData.SetNum(sizeof(uint16));
+        FMemory::Memcpy(AckData.GetData(), &SequenceNumber, sizeof(uint16));
+
+        FNetworkMessage AckMessage(ENetworkMessageType::MessageAck, AckData);
+        AckMessage.SetProjectId(ProjectId);
+        AckMessage.SetSequenceNumber(GetNextSequenceNumber());
+
+        // ACK 메시지 전송
+        SendMessageToEndpoint(Sender, AckMessage);
+
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent ACK for message (Seq: %u, to: %s)"),
+            SequenceNumber, *Sender.ToString());
+    }
 }
 
 uint16 FNetworkManager::GetNextSequenceNumber()
@@ -3172,4 +3270,485 @@ bool FNetworkManager::CheckQualityAssessments(float DeltaTime)
     }
 
     return true;  // 계속 틱 유지
+}
+
+// ACK가 필요한 메시지 전송
+bool FNetworkManager::SendMessageWithAck(const FIPv4Endpoint& Endpoint, const FNetworkMessage& Message)
+{
+    if (!bIsInitialized)
+    {
+        return false;
+    }
+
+    // 현재 시간
+    double CurrentTime = FPlatformTime::Seconds();
+
+    // 메시지 전송
+    bool bSuccess = SendMessageToEndpoint(Endpoint, Message);
+    if (!bSuccess)
+    {
+        return false;
+    }
+
+    // 시퀀스 번호 가져오기
+    uint16 SequenceNumber = Message.GetSequenceNumber();
+
+    // 메시지 추적 정보 생성
+    FMessageAckData AckData(SequenceNumber, Endpoint);
+    AckData.Status = EMessageAckStatus::Sent;
+    AckData.SentTime = CurrentTime;
+    AckData.LastAttemptTime = CurrentTime;
+    AckData.AttemptCount = 1;
+
+    // 추적 목록에 추가
+    PendingAcknowledgements.Add(SequenceNumber, AckData);
+
+    // 엔드포인트별 시퀀스 매핑 업데이트
+    FString EndpointStr = Endpoint.ToString();
+    if (!EndpointSequenceMap.Contains(EndpointStr))
+    {
+        EndpointSequenceMap.Add(EndpointStr, TArray<uint16>());
+    }
+    EndpointSequenceMap[EndpointStr].Add(SequenceNumber);
+
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent message with ACK to %s (Seq: %u)"),
+        *EndpointStr, SequenceNumber);
+
+    return true;
+}
+
+// ACK 메시지 처리
+void FNetworkManager::HandleMessageAck(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    // ACK 메시지에서 원본 시퀀스 번호 추출
+    if (Message.GetData().Num() < sizeof(uint16))
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Received invalid ACK message (too small)"));
+        return;
+    }
+
+    uint16 AckedSequence = 0;
+    FMemory::Memcpy(&AckedSequence, Message.GetData().GetData(), sizeof(uint16));
+
+    // 추적 중인 메시지인지 확인
+    if (!PendingAcknowledgements.Contains(AckedSequence))
+    {
+        // 이미 처리되었거나 알 수 없는 메시지일 수 있음
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Received ACK for unknown sequence: %u"), AckedSequence);
+        return;
+    }
+
+    // 메시지 상태 업데이트
+    FMessageAckData& AckData = PendingAcknowledgements[AckedSequence];
+    AckData.Status = EMessageAckStatus::Acknowledged;
+
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Message acknowledged (Seq: %u, Endpoint: %s)"),
+        AckedSequence, *AckData.TargetEndpoint.ToString());
+
+    // 확인된 메시지 추적 목록에서 제거
+    FString EndpointStr = AckData.TargetEndpoint.ToString();
+    if (EndpointSequenceMap.Contains(EndpointStr))
+    {
+        EndpointSequenceMap[EndpointStr].Remove(AckedSequence);
+
+        // 엔드포인트의 모든 메시지가 확인되면 맵에서 제거
+        if (EndpointSequenceMap[EndpointStr].Num() == 0)
+        {
+            EndpointSequenceMap.Remove(EndpointStr);
+        }
+    }
+
+    // 확인된 메시지 제거
+    PendingAcknowledgements.Remove(AckedSequence);
+}
+
+// 메시지 재전송 체크
+bool FNetworkManager::CheckMessageRetries(float DeltaTime)
+{
+    if (!bIsInitialized)
+    {
+        return true; // 계속 틱 유지
+    }
+
+    double CurrentTime = FPlatformTime::Seconds();
+
+    // 타임아웃된 메시지 목록
+    TArray<uint16> TimeoutSequences;
+    TArray<uint16> RetrySequences;
+
+    // 모든 대기 중인 메시지 검사
+    for (auto& Pair : PendingAcknowledgements)
+    {
+        uint16 SequenceNumber = Pair.Key;
+        FMessageAckData& AckData = Pair.Value;
+
+        // 이미 확인된 메시지는 건너뜀
+        if (AckData.Status == EMessageAckStatus::Acknowledged)
+        {
+            continue;
+        }
+
+        double ElapsedTime = CurrentTime - AckData.LastAttemptTime;
+
+        // 타임아웃 확인
+        if (ElapsedTime > MESSAGE_TIMEOUT_SECONDS)
+        {
+            // 최대 시도 횟수를 초과하면 실패로 처리
+            if (AckData.AttemptCount >= MAX_RETRY_ATTEMPTS)
+            {
+                // 타임아웃 로그
+                UE_LOG(LogMultiServerSync, Warning, TEXT("Message timed out after %d attempts (Seq: %u, Endpoint: %s)"),
+                    AckData.AttemptCount, SequenceNumber, *AckData.TargetEndpoint.ToString());
+
+                AckData.Status = EMessageAckStatus::Timeout;
+                TimeoutSequences.Add(SequenceNumber);
+            }
+            else
+            {
+                // 재전송 목록에 추가
+                RetrySequences.Add(SequenceNumber);
+            }
+        }
+    }
+
+    // 타임아웃된 메시지 처리
+    for (uint16 Sequence : TimeoutSequences)
+    {
+        // 엔드포인트별 매핑에서 제거
+        FMessageAckData& AckData = PendingAcknowledgements[Sequence];
+        FString EndpointStr = AckData.TargetEndpoint.ToString();
+
+        if (EndpointSequenceMap.Contains(EndpointStr))
+        {
+            EndpointSequenceMap[EndpointStr].Remove(Sequence);
+
+            if (EndpointSequenceMap[EndpointStr].Num() == 0)
+            {
+                EndpointSequenceMap.Remove(EndpointStr);
+            }
+        }
+
+        // 추적 목록에서 제거
+        PendingAcknowledgements.Remove(Sequence);
+    }
+
+    // 재전송 메시지 처리
+    for (uint16 Sequence : RetrySequences)
+    {
+        RetryMessage(Sequence);
+    }
+
+    // 마지막 체크 시간 업데이트
+    LastRetryCheckTime = CurrentTime;
+
+    return true; // 계속 틱 유지
+}
+
+// 메시지 재전송
+void FNetworkManager::RetryMessage(uint16 SequenceNumber)
+{
+    if (!PendingAcknowledgements.Contains(SequenceNumber))
+    {
+        return;
+    }
+
+    FMessageAckData& AckData = PendingAcknowledgements[SequenceNumber];
+
+    // 현재 시간
+    double CurrentTime = FPlatformTime::Seconds();
+
+    // 시도 횟수 증가
+    AckData.AttemptCount++;
+    AckData.LastAttemptTime = CurrentTime;
+
+    // 메시지 재전송을 위한 가상의 메시지 생성
+    // 실제 구현에서는 원본 메시지 내용을 저장해 두어야 함
+    TArray<uint8> DummyData; // 실제 구현에서는 저장된 원본 데이터 사용
+    FNetworkMessage Message(ENetworkMessageType::Data, DummyData);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(SequenceNumber);
+
+    // 메시지 재전송
+    bool bSuccess = SendMessageToEndpoint(AckData.TargetEndpoint, Message);
+
+    // 상태 업데이트
+    if (bSuccess)
+    {
+        AckData.Status = EMessageAckStatus::Sent;
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Retrying message (Seq: %u, Attempt: %d, Endpoint: %s)"),
+            SequenceNumber, AckData.AttemptCount, *AckData.TargetEndpoint.ToString());
+    }
+    else
+    {
+        AckData.Status = EMessageAckStatus::Failed;
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Failed to retry message (Seq: %u, Endpoint: %s)"),
+            SequenceNumber, *AckData.TargetEndpoint.ToString());
+    }
+}
+
+// 신뢰성 있는 메시지 전송
+bool FNetworkManager::SendMessageWithAcknowledgement(const FString& EndpointId, const TArray<uint8>& Message)
+{
+    if (!bIsInitialized)
+    {
+        return false;
+    }
+
+    FServerEndpoint* TargetServer = DiscoveredServers.Find(EndpointId);
+    if (!TargetServer)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Endpoint not found: %s"), *EndpointId);
+        return false;
+    }
+
+    // 메시지 생성
+    FNetworkMessage NetworkMessage(ENetworkMessageType::Data, Message);
+    NetworkMessage.SetProjectId(ProjectId);
+    NetworkMessage.SetSequenceNumber(GetNextSequenceNumber());
+
+    // ACK 필요함을 나타내는 플래그 설정
+    NetworkMessage.SetFlags(1); // Flag = 1: ACK 필요
+
+    // 엔드포인트로 전송
+    FIPv4Endpoint Endpoint(TargetServer->IPAddress, TargetServer->Port);
+    return SendMessageWithAck(Endpoint, NetworkMessage);
+}
+
+// 확인 대기 중인 메시지 개수 반환
+TMap<FString, int32> FNetworkManager::GetPendingAcknowledgements() const
+{
+    TMap<FString, int32> Result;
+
+    for (const auto& Pair : EndpointSequenceMap)
+    {
+        Result.Add(Pair.Key, Pair.Value.Num());
+    }
+
+    return Result;
+}
+
+// 순서 보장 설정
+void FNetworkManager::SetOrderGuaranteed(bool bEnable)
+{
+    bOrderGuaranteedEnabled = bEnable;
+
+    // 모든, 시퀀스 추적기에 설정 적용
+    for (auto& Pair : EndpointSequenceTrackers)
+    {
+        Pair.Value.bOrderGuaranteed = bEnable;
+    }
+
+    UE_LOG(LogMultiServerSync, Display, TEXT("Message order guarantee %s"),
+        bEnable ? TEXT("enabled") : TEXT("disabled"));
+}
+
+// 순서 보장 상태 확인
+bool FNetworkManager::IsOrderGuaranteed() const
+{
+    return bOrderGuaranteedEnabled;
+}
+
+// 누락된 시퀀스 목록 가져오기
+TMap<FString, TArray<int32>> FNetworkManager::GetMissingSequences() const
+{
+    TMap<FString, TArray<int32>> Result;
+
+    for (const auto& Pair : EndpointSequenceTrackers)
+    {
+        TArray<uint16> MissingSeqs = Pair.Value.GetMissingSequences();
+
+        if (MissingSeqs.Num() > 0)
+        {
+            TArray<int32> MissingInts;
+            for (uint16 Seq : MissingSeqs)
+            {
+                MissingInts.Add((int32)Seq);
+            }
+            Result.Add(Pair.Key, MissingInts);
+        }
+    }
+
+    return Result;
+}
+
+// 수신된 시퀀스 추적
+bool FNetworkManager::TrackReceivedSequence(const FIPv4Endpoint& Sender, uint16 SequenceNumber)
+{
+    FString EndpointStr = Sender.ToString();
+
+    // 엔드포인트의 시퀀스 추적기가 없으면 생성
+    if (!EndpointSequenceTrackers.Contains(EndpointStr))
+    {
+        FMessageSequenceTracker Tracker;
+        Tracker.bOrderGuaranteed = bOrderGuaranteedEnabled;
+        EndpointSequenceTrackers.Add(EndpointStr, Tracker);
+    }
+
+    // 시퀀스 처리
+    FMessageSequenceTracker& Tracker = EndpointSequenceTrackers[EndpointStr];
+    bool bCanProcess = Tracker.AddSequence(SequenceNumber);
+
+    // 누락된 메시지가 있으면 로그 출력
+    TArray<uint16> MissingSeqs = Tracker.GetMissingSequences();
+    if (MissingSeqs.Num() > 0)
+    {
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Missing sequences from %s: %d"),
+            *EndpointStr, MissingSeqs.Num());
+    }
+
+    return bCanProcess;
+}
+
+// 메시지가 순서대로 도착했는지 확인
+bool FNetworkManager::IsMessageInOrder(const FIPv4Endpoint& Sender, uint16 SequenceNumber)
+{
+    FString EndpointStr = Sender.ToString();
+
+    if (!EndpointSequenceTrackers.Contains(EndpointStr))
+    {
+        return true; // 첫 메시지는 항상 순서대로 간주
+    }
+
+    const FMessageSequenceTracker& Tracker = EndpointSequenceTrackers[EndpointStr];
+    return SequenceNumber == Tracker.NextExpectedSequence;
+}
+
+// 누락된 메시지 요청
+void FNetworkManager::RequestMissingMessages(const FIPv4Endpoint& Endpoint)
+{
+    FString EndpointStr = Endpoint.ToString();
+
+    if (!EndpointSequenceTrackers.Contains(EndpointStr))
+    {
+        return;
+    }
+
+    const FMessageSequenceTracker& Tracker = EndpointSequenceTrackers[EndpointStr];
+    TArray<uint16> MissingSeqs = Tracker.GetMissingSequences();
+
+    if (MissingSeqs.Num() == 0)
+    {
+        return;
+    }
+
+    // 최대 10개 시퀀스만 요청 (과도한 요청 방지)
+    const int32 MaxRequestCount = 10;
+    if (MissingSeqs.Num() > MaxRequestCount)
+    {
+        MissingSeqs.SetNum(MaxRequestCount);
+    }
+
+    // 재전송 요청 메시지 생성
+    TArray<uint8> RequestData;
+    RequestData.SetNum(MissingSeqs.Num() * sizeof(uint16));
+
+    for (int32 i = 0; i < MissingSeqs.Num(); i++)
+    {
+        FMemory::Memcpy(RequestData.GetData() + (i * sizeof(uint16)), &MissingSeqs[i], sizeof(uint16));
+    }
+
+    FNetworkMessage Message(ENetworkMessageType::MessageRetry, RequestData);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(GetNextSequenceNumber());
+
+    // 요청 전송
+    SendMessageToEndpoint(Endpoint, Message);
+
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Requested %d missing messages from %s"),
+        MissingSeqs.Num(), *EndpointStr);
+}
+
+// 메시지 재전송 요청 처리
+void FNetworkManager::HandleMessageRetryRequest(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
+{
+    // 요청된 시퀀스 번호 추출
+    const TArray<uint8>& Data = Message.GetData();
+    int32 SequenceCount = Data.Num() / sizeof(uint16);
+
+    if (SequenceCount == 0)
+    {
+        return;
+    }
+
+    TArray<uint16> RequestedSequences;
+    RequestedSequences.SetNumZeroed(SequenceCount);
+
+    for (int32 i = 0; i < SequenceCount; i++)
+    {
+        uint16 SequenceNumber = 0;
+        FMemory::Memcpy(&SequenceNumber, Data.GetData() + (i * sizeof(uint16)), sizeof(uint16));
+        RequestedSequences.Add(SequenceNumber);
+    }
+
+    // 각 시퀀스에 대해 재전송 처리
+    // 실제 구현에서는 원본 메시지를 캐싱해야 함
+    for (uint16 Sequence : RequestedSequences)
+    {
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Received retry request for sequence %u from %s"),
+            Sequence, *Sender.ToString());
+
+        // 가상의 원본 메시지 재전송
+        // 실제 구현에서는 캐싱된 메시지 사용
+        TArray<uint8> DummyData;
+        FNetworkMessage RetryMessage(ENetworkMessageType::Data, DummyData);
+        RetryMessage.SetProjectId(ProjectId);
+        RetryMessage.SetSequenceNumber(Sequence);
+        RetryMessage.SetFlags(1); // ACK 필요 표시
+
+        SendMessageToEndpoint(Sender, RetryMessage);
+    }
+}
+
+// 시퀀스 관리 정기 체크
+bool FNetworkManager::CheckSequenceManagement(float DeltaTime)
+{
+    if (!bIsInitialized)
+    {
+        return true; // 계속 틱 유지
+    }
+
+    // 누락된 메시지가 있는 엔드포인트에 재전송 요청
+    for (const auto& Pair : EndpointSequenceTrackers)
+    {
+        FString EndpointStr = Pair.Key;
+        const FMessageSequenceTracker& Tracker = Pair.Value;
+
+        if (Tracker.NeedsRetransmissionRequest())
+        {
+            // 엔드포인트 파싱
+            FIPv4Address Address;
+            uint16 PortNumber = 0;  // Port를 PortNumber로 변경
+
+            TArray<FString> Parts;
+            EndpointStr.ParseIntoArray(Parts, TEXT(":"), true);
+
+            if (Parts.Num() >= 2 && FIPv4Address::Parse(Parts[0], Address))
+            {
+                PortNumber = FCString::Atoi(*Parts[1]);  // Port를 PortNumber로 변경
+                FIPv4Endpoint Endpoint(Address, PortNumber);  // 여기도 변경
+
+                // 누락 메시지 요청
+                RequestMissingMessages(Endpoint);
+            }
+        }
+    }
+
+    return true; // 계속 틱 유지
+}
+
+// 메시지 처리 여부 결정
+bool FNetworkManager::ShouldProcessMessage(const FIPv4Endpoint& Sender, uint16 SequenceNumber)
+{
+    // 수신된 시퀀스 추적
+    bool bCanProcess = TrackReceivedSequence(Sender, SequenceNumber);
+
+    // 순서 보장이 활성화되어 있고, 처리할 수 없는 경우
+    if (bOrderGuaranteedEnabled && !bCanProcess)
+    {
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Message out of order (Seq: %u, from: %s), deferring processing"),
+            SequenceNumber, *Sender.ToString());
+        return false;
+    }
+
+    return true;
 }

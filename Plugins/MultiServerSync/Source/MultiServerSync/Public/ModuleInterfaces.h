@@ -108,6 +108,14 @@ public:
     virtual void SetTimeSeriesSampleInterval(const FIPv4Endpoint& ServerEndpoint, double IntervalSeconds) = 0;
     virtual bool GetTimeSeriesData(const FIPv4Endpoint& ServerEndpoint, TArray<FLatencyTimeSeriesSample>& OutTimeSeries) const = 0;
     virtual bool GetNetworkTrendAnalysis(const FIPv4Endpoint& ServerEndpoint, FNetworkTrendAnalysis& OutTrendAnalysis) const = 0;
+
+    // 신뢰성 있는 메시지 전송 관련 메서드
+    virtual bool SendMessageWithAcknowledgement(const FString& EndpointId, const TArray<uint8>& Message) = 0;
+    virtual TMap<FString, int32> GetPendingAcknowledgements() const = 0;
+
+    virtual void SetOrderGuaranteed(bool bEnable) = 0;
+    virtual bool IsOrderGuaranteed() const = 0;
+    virtual TMap<FString, TArray<int32>> GetMissingSequences() const = 0;
 };
 
 /**

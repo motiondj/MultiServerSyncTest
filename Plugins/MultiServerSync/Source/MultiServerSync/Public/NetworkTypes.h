@@ -1,7 +1,7 @@
-﻿// NetworkTypes.h
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
+#include "Interfaces/IPv4/IPv4Endpoint.h" // 이 줄을 추가하세요
 
 /**
  * 네트워크 지연 시간의 단일 시계열 샘플
@@ -68,6 +68,247 @@ enum class ENetworkEventType : uint8
     HighJitter,         // 높은 지터
     HighPacketLoss,     // 높은 패킷 손실
     Stabilized          // 네트워크 안정화
+};
+
+/**
+ * 메시지 확인 상태 열거형
+ * 메시지의 전송/수신 상태를 표현합니다.
+ */
+enum class EMessageAckStatus : uint8
+{
+    None,       // 초기 상태
+    Sent,       // 메시지가 전송됨
+    Received,   // 메시지가 수신됨
+    Acknowledged,// 메시지가 확인됨
+    Failed,     // 메시지 전송 실패
+    Timeout     // 메시지 확인 시간 초과
+};
+
+/**
+ * 메시지 확인 데이터 구조체
+ * 메시지 시퀀스와 확인 상태를 추적합니다.
+ */
+struct MULTISERVERSYNC_API FMessageAckData
+{
+    uint16 SequenceNumber;          // 메시지 시퀀스 번호
+    EMessageAckStatus Status;       // 메시지 상태
+    double SentTime;                // 전송 시간
+    double LastAttemptTime;         // 마지막 시도 시간
+    int32 AttemptCount;             // 시도 횟수
+    FIPv4Endpoint TargetEndpoint;   // 대상 엔드포인트
+
+    // 기본 생성자
+    FMessageAckData()
+        : SequenceNumber(0)
+        , Status(EMessageAckStatus::None)
+        , SentTime(0.0)
+        , LastAttemptTime(0.0)
+        , AttemptCount(0)
+    {
+    }
+
+    // 시퀀스 번호 및 대상으로 초기화하는 생성자
+    FMessageAckData(uint16 InSequenceNumber, const FIPv4Endpoint& InTargetEndpoint)
+        : SequenceNumber(InSequenceNumber)
+        , Status(EMessageAckStatus::None)
+        , SentTime(0.0)
+        , LastAttemptTime(0.0)
+        , AttemptCount(0)
+        , TargetEndpoint(InTargetEndpoint)
+    {
+    }
+
+    // 현재 상태에 대한 문자열 반환
+    FString GetStatusString() const
+    {
+        switch (Status)
+        {
+        case EMessageAckStatus::None: return TEXT("None");
+        case EMessageAckStatus::Sent: return TEXT("Sent");
+        case EMessageAckStatus::Received: return TEXT("Received");
+        case EMessageAckStatus::Acknowledged: return TEXT("Acknowledged");
+        case EMessageAckStatus::Failed: return TEXT("Failed");
+        case EMessageAckStatus::Timeout: return TEXT("Timeout");
+        default: return TEXT("Unknown");
+        }
+    }
+};
+
+/**
+ * 메시지 시퀀스 관리 구조체
+ * 각 엔드포인트별 메시지 시퀀스 관리를 위한 구조체
+ */
+struct MULTISERVERSYNC_API FMessageSequenceTracker
+{
+    uint16 LastProcessedSequence;    // 마지막으로 처리된 시퀀스 번호
+    uint16 NextExpectedSequence;     // 다음에 기대되는 시퀀스 번호
+    TArray<uint16> ReceivedSequences; // 수신된 시퀀스 번호 목록
+    TSet<uint16> MissingSequences;    // 누락된 시퀀스 번호 목록
+    uint16 SequenceWindowSize;        // 시퀀스 윈도우 크기
+    bool bOrderGuaranteed;           // 순서 보장 여부
+    int32 MaxOutOfOrderMessages;      // 최대 순서 어긋난 메시지 수
+
+    // 기본 생성자
+    FMessageSequenceTracker()
+        : LastProcessedSequence(0)
+        , NextExpectedSequence(1)
+        , SequenceWindowSize(100)
+        , bOrderGuaranteed(false)
+        , MaxOutOfOrderMessages(10)
+    {
+    }
+
+    // 시퀀스 번호가 윈도우 내에 있는지 확인
+    bool IsSequenceInWindow(uint16 Sequence) const
+    {
+        // 빈 윈도우인 경우
+        if (ReceivedSequences.Num() == 0)
+            return true;
+
+        // 윈도우 범위 계산
+        uint16 WindowStart = LastProcessedSequence;
+        uint16 WindowEnd = (uint16)(WindowStart + SequenceWindowSize);
+
+        // 윈도우가 랩어라운드되는 경우 처리
+        if (WindowEnd < WindowStart)
+        {
+            return (Sequence >= WindowStart) || (Sequence <= WindowEnd);
+        }
+        else
+        {
+            return (Sequence >= WindowStart) && (Sequence <= WindowEnd);
+        }
+    }
+
+    // 시퀀스 번호가 이미 처리되었는지 확인
+    bool IsSequenceAlreadyProcessed(uint16 Sequence) const
+    {
+        // 처음 받는 메시지인 경우
+        if (ReceivedSequences.Num() == 0)
+            return false;
+
+        // 마지막 처리 시퀀스보다 작은 경우
+        // 랩어라운드 상황을 고려 (uint16 범위: 0-65535)
+        if (LastProcessedSequence > 0xF000 && Sequence < 0x1000)
+        {
+            // 랩어라운드 케이스 (65530 -> 5)
+            return false;
+        }
+        else if (LastProcessedSequence < 0x1000 && Sequence > 0xF000)
+        {
+            // 랩어라운드 케이스 (5 <- 65530)
+            return true;
+        }
+        else
+        {
+            return Sequence <= LastProcessedSequence;
+        }
+    }
+
+    // 새 메시지 추가 및 누락 메시지 감지
+    bool AddSequence(uint16 Sequence)
+    {
+        // 이미 처리된 메시지는 무시
+        if (IsSequenceAlreadyProcessed(Sequence))
+            return false;
+
+        // 윈도우 범위 밖이면 거부
+        if (!IsSequenceInWindow(Sequence))
+            return false;
+
+        // 이미 수신된 시퀀스면 중복으로 처리
+        if (ReceivedSequences.Contains(Sequence))
+            return false;
+
+        // 시퀀스 추가
+        ReceivedSequences.Add(Sequence);
+
+        // 순서가 맞지 않는 메시지 처리
+        if (Sequence != NextExpectedSequence)
+        {
+            // 누락된 시퀀스 감지
+            if (Sequence > NextExpectedSequence)
+            {
+                for (uint16 Missing = NextExpectedSequence; Missing < Sequence; Missing++)
+                {
+                    if (!ReceivedSequences.Contains(Missing))
+                    {
+                        MissingSequences.Add(Missing);
+                    }
+                }
+            }
+
+            // 순서 보장이 필요하면 false 반환
+            if (bOrderGuaranteed)
+            {
+                // 순서 어긋난 메시지가 너무 많으면 이전 메시지를 포기
+                if (ReceivedSequences.Num() > MaxOutOfOrderMessages)
+                {
+                    ProcessNextSequentialMessages();
+                }
+                return false;
+            }
+        }
+
+        // 연속된 메시지 처리
+        ProcessNextSequentialMessages();
+
+        return true;
+    }
+
+    // 연속된 메시지 처리
+    void ProcessNextSequentialMessages()
+    {
+        // 수신된 메시지를 오름차순으로 정렬
+        ReceivedSequences.Sort();
+
+        uint16 LastSequential = LastProcessedSequence;
+
+        // 연속된 메시지 찾기
+        for (int32 i = 0; i < ReceivedSequences.Num(); i++)
+        {
+            uint16 CurrentSeq = ReceivedSequences[i];
+
+            // 연속되지 않은 메시지 발견
+            if (CurrentSeq != (uint16)(LastSequential + 1))
+                break;
+
+            // 연속된 메시지 업데이트
+            LastSequential = CurrentSeq;
+
+            // 누락 목록에서 제거
+            MissingSequences.Remove(CurrentSeq);
+        }
+
+        // 마지막 처리 시퀀스 업데이트
+        if (LastSequential != LastProcessedSequence)
+        {
+            LastProcessedSequence = LastSequential;
+            NextExpectedSequence = (uint16)(LastProcessedSequence + 1);
+
+            // 처리된 메시지 제거
+            ReceivedSequences.RemoveAll([this](uint16 Seq) {
+                return Seq <= LastProcessedSequence;
+                });
+        }
+    }
+
+    // 누락된 메시지 조회
+    TArray<uint16> GetMissingSequences() const
+    {
+        TArray<uint16> Result;
+        for (const auto& Seq : MissingSequences)
+        {
+            Result.Add(Seq);
+        }
+        return Result;
+    }
+
+    // 누락된 메시지 요청 필요 여부
+    bool NeedsRetransmissionRequest() const
+    {
+        return MissingSequences.Num() > 0;
+    }
 };
 
 /**
@@ -145,6 +386,175 @@ struct MULTISERVERSYNC_API FNetworkQualityAssessment
         default:
             return TEXT("None");
         }
+    }
+};
+
+/**
+ * 네트워크 메시지 타입
+ * 각 메시지의 용도를 구분하는 열거형
+ */
+enum class EMessageType : uint8
+{
+    Invalid = 0,      // 유효하지 않은 메시지
+    Data,             // 일반 데이터 메시지
+    Ping_Request,     // 핑 요청 메시지
+    Ping_Response,    // 핑 응답 메시지
+    ACK,              // 메시지 수신 확인
+    Reliable_Data,    // 신뢰성 있는 데이터 메시지
+    // 필요에 따라 더 많은 메시지 타입 추가 가능
+    Max               // 메시지 타입의 최대 값 (유효성 검사용)
+};
+
+/**
+ * 메시지 전송 상태
+ * 신뢰성 있는 메시지의 현재 상태를 나타냄
+ */
+enum class EMessageStatus : uint8
+{
+    Unsent,           // 전송되지 않음
+    Sent,             // 전송됨
+    Acknowledged,     // 확인됨
+    Failed,           // 전송 실패
+    Timeout           // 타임아웃
+};
+
+/**
+ * 메시지 확인(ACK) 구조체
+ * 수신된 메시지를 확인하기 위한 구조체
+ */
+struct MULTISERVERSYNC_API FACKMessage
+{
+    uint32 SequenceNumber;    // 확인하는 메시지의 시퀀스 번호
+    EMessageType AckedType;   // 확인하는 메시지의 타입
+
+    // 생성자
+    FACKMessage()
+        : SequenceNumber(0)
+        , AckedType(EMessageType::Invalid)
+    {
+    }
+
+    FACKMessage(uint32 InSequenceNumber, EMessageType InAckedType)
+        : SequenceNumber(InSequenceNumber)
+        , AckedType(InAckedType)
+    {
+    }
+
+    // 직렬화 함수
+    void Serialize(FMemoryWriter& Writer) const;
+    void Deserialize(FMemoryReader& Reader);
+};
+
+/**
+ * 신뢰성 있는 데이터 메시지 구조체
+ * 신뢰성 있는 전송을 위한 메시지 구조체
+ */
+struct MULTISERVERSYNC_API FReliableDataMessage
+{
+    uint32 SequenceNumber;    // 메시지 시퀀스 번호
+    TArray<uint8> Data;       // 실제 데이터
+    bool RequireACK;          // ACK 필요 여부
+    float Timeout;            // 타임아웃 시간(초)
+
+    // 생성자
+    FReliableDataMessage()
+        : SequenceNumber(0)
+        , RequireACK(true)
+        , Timeout(1.0f)
+    {
+    }
+
+    FReliableDataMessage(uint32 InSequenceNumber, const TArray<uint8>& InData, bool InRequireACK = true, float InTimeout = 1.0f)
+        : SequenceNumber(InSequenceNumber)
+        , Data(InData)
+        , RequireACK(InRequireACK)
+        , Timeout(InTimeout)
+    {
+    }
+
+    // 직렬화 함수
+    void Serialize(FMemoryWriter& Writer) const;
+    void Deserialize(FMemoryReader& Reader);
+};
+
+/**
+ * 전송 중인 메시지 추적 구조체
+ * 재전송을 위해 전송된 메시지의 상태를 추적
+ */
+struct MULTISERVERSYNC_API FPendingMessage
+{
+    uint32 SequenceNumber;         // 메시지 시퀀스 번호
+    EMessageType Type;             // 메시지 타입
+    TArray<uint8> SerializedData;  // 직렬화된 메시지 데이터
+    FIPv4Endpoint Destination;     // 목적지 엔드포인트
+    float Timeout;                 // 타임아웃 시간(초)
+    float ElapsedTime;             // 전송 후 경과 시간(초)
+    int32 RetryCount;              // 재시도 횟수
+    int32 MaxRetries;              // 최대 재시도 횟수
+    EMessageStatus Status;         // 메시지 상태
+
+    // 생성자
+    FPendingMessage()
+        : SequenceNumber(0)
+        , Type(EMessageType::Invalid)
+        , Timeout(1.0f)
+        , ElapsedTime(0.0f)
+        , RetryCount(0)
+        , MaxRetries(3)
+        , Status(EMessageStatus::Unsent)
+    {
+    }
+
+    // 패러미터가 있는 생성자
+    FPendingMessage(
+        uint32 InSequenceNumber,
+        EMessageType InType,
+        const TArray<uint8>& InSerializedData,
+        const FIPv4Endpoint& InDestination,
+        float InTimeout = 1.0f,
+        int32 InMaxRetries = 3)
+        : SequenceNumber(InSequenceNumber)
+        , Type(InType)
+        , SerializedData(InSerializedData)
+        , Destination(InDestination)
+        , Timeout(InTimeout)
+        , ElapsedTime(0.0f)
+        , RetryCount(0)
+        , MaxRetries(InMaxRetries)
+        , Status(EMessageStatus::Unsent)
+    {
+    }
+
+    // 타임아웃 여부 확인
+    bool IsTimedOut() const
+    {
+        return ElapsedTime >= Timeout;
+    }
+
+    // 최대 재시도 횟수 초과 여부 확인
+    bool HasExceededMaxRetries() const
+    {
+        return RetryCount >= MaxRetries;
+    }
+
+    // 재시도 가능 여부 확인
+    bool CanRetry() const
+    {
+        return IsTimedOut() && !HasExceededMaxRetries();
+    }
+
+    // 시간 업데이트
+    void UpdateTime(float DeltaTime)
+    {
+        ElapsedTime += DeltaTime;
+    }
+
+    // 재시도 수행
+    void Retry()
+    {
+        RetryCount++;
+        ElapsedTime = 0.0f;
+        Status = EMessageStatus::Sent;
     }
 };
 

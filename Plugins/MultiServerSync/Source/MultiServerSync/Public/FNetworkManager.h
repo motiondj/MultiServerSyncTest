@@ -41,6 +41,10 @@ enum class ENetworkMessageType : uint8
     PingRequest = 30,         // 핑 요청 메시지
     PingResponse = 31,        // 핑 응답 메시지
 
+    // 메시지 확인 관련 메시지
+    MessageAck = 40,         // 메시지 확인 응답
+    MessageRetry = 41,       // 메시지 재전송 요청
+
     Custom = 255      // 사용자 정의 메시지
 };
 
@@ -393,6 +397,15 @@ public:
      */
     void DisablePeriodicPing(const FIPv4Endpoint& ServerEndpoint);
 
+    // 신뢰성 있는 메시지 전송 관련 메서드
+    virtual bool SendMessageWithAcknowledgement(const FString& EndpointId, const TArray<uint8>& Message) override;
+    virtual TMap<FString, int32> GetPendingAcknowledgements() const override;
+
+    // 시퀀스 관리 관련 메서드
+    virtual void SetOrderGuaranteed(bool bEnable) override;
+    virtual bool IsOrderGuaranteed() const override;
+    virtual TMap<FString, TArray<int32>> GetMissingSequences() const override;
+
 private:
     /** Broadcast socket for server discovery */
     FSocket* BroadcastSocket;
@@ -594,4 +607,33 @@ private:
 
     // 연속 타임아웃 리셋
     void ResetConsecutiveTimeouts(const FIPv4Endpoint& ServerEndpoint);
+
+    // 메시지 확인 관련 멤버 변수
+    TMap<uint16, FMessageAckData> PendingAcknowledgements;  // 확인 대기 중인 메시지들
+    TMap<FString, TArray<uint16>> EndpointSequenceMap;     // 엔드포인트별 전송 시퀀스 번호 리스트
+    double LastRetryCheckTime;                            // 마지막 재전송 체크 시간
+    FTSTicker::FDelegateHandle MessageRetryTickHandle;     // 메시지 재전송 틱 핸들
+    const float MESSAGE_RETRY_INTERVAL = 0.5f;             // 재전송 체크 간격 (초)
+    const float MESSAGE_TIMEOUT_SECONDS = 3.0f;            // 메시지 타임아웃 시간 (초)
+    const int32 MAX_RETRY_ATTEMPTS = 3;                   // 최대 재전송 시도 횟수
+
+    // 메시지 확인 관련 메서드
+    bool SendMessageWithAck(const FIPv4Endpoint& Endpoint, const FNetworkMessage& Message);
+    void HandleMessageAck(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    bool CheckMessageRetries(float DeltaTime);
+    void RetryMessage(uint16 SequenceNumber);
+
+    // 시퀀스 관리 관련 멤버 변수
+    TMap<FString, FMessageSequenceTracker> EndpointSequenceTrackers;  // 엔드포인트별 시퀀스 추적기
+    bool bOrderGuaranteedEnabled;                                   // 순서 보장 활성화 여부
+    FTSTicker::FDelegateHandle SequenceManagementTickHandle;         // 시퀀스 관리 틱 핸들
+    const float SEQUENCE_MANAGEMENT_INTERVAL = 1.0f;                // 시퀀스 관리 틱 간격 (초)
+
+    // 시퀀스 관리 관련 메서드
+    bool TrackReceivedSequence(const FIPv4Endpoint& Sender, uint16 SequenceNumber);
+    bool IsMessageInOrder(const FIPv4Endpoint& Sender, uint16 SequenceNumber);
+    void RequestMissingMessages(const FIPv4Endpoint& Endpoint);
+    void HandleMessageRetryRequest(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    bool CheckSequenceManagement(float DeltaTime);
+    bool ShouldProcessMessage(const FIPv4Endpoint& Sender, uint16 SequenceNumber);
 };
