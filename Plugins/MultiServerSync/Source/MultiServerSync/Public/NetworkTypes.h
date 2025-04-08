@@ -714,4 +714,109 @@ struct MULTISERVERSYNC_API FNetworkLatencyStats
         HighJitterThreshold = FMath::Max(10.0, JitterThreshold);        // 최소 10ms
         HighPacketLossThreshold = FMath::Clamp(PacketLossThreshold, 0.01, 0.5); // 1%~50%
     }
+
+    // 멱등성 처리 결과 저장
+    void StoreIdempotentResult(uint16 SequenceNumber, const FIdempotentResult& Result);
+
+    // 멱등성 처리 결과 가져오기
+    bool GetIdempotentResult(uint16 SequenceNumber, FIdempotentResult& OutResult);
+
+    // 멱등성 캐시 정리
+    void CleanupIdempotentCache();
+
+    /**
+ * 멱등성 처리 결과 구조체
+ * 중복 메시지 처리 시 이전 결과를 저장하고 재사용하기 위한 구조체
+ */
+    struct MULTISERVERSYNC_API FIdempotentResult
+    {
+        bool bSuccess;               // 작업 성공 여부
+        TArray<uint8> ResultData;    // 결과 데이터
+        FString ResultMessage;       // 결과 메시지
+        int32 ResultCode;            // 결과 코드
+        double Timestamp;            // 처리 시간
+
+        // 기본 생성자
+        FIdempotentResult()
+            : bSuccess(false)
+            , ResultCode(0)
+            , Timestamp(0.0)
+        {
+        }
+
+        // 성공 결과 생성자
+        static FIdempotentResult Success(const TArray<uint8>& InResultData = TArray<uint8>(), const FString& InResultMessage = TEXT("Success"))
+        {
+            FIdempotentResult Result;
+            Result.bSuccess = true;
+            Result.ResultData = InResultData;
+            Result.ResultMessage = InResultMessage;
+            Result.ResultCode = 0;
+            Result.Timestamp = FPlatformTime::Seconds();
+            return Result;
+        }
+
+        // 실패 결과 생성자
+        static FIdempotentResult Failure(int32 InResultCode = -1, const FString& InResultMessage = TEXT("Failure"))
+        {
+            FIdempotentResult Result;
+            Result.bSuccess = false;
+            Result.ResultMessage = InResultMessage;
+            Result.ResultCode = InResultCode;
+            Result.Timestamp = FPlatformTime::Seconds();
+            return Result;
+        }
+
+        // 직렬화
+        TArray<uint8> Serialize() const
+        {
+            FMemoryWriter Writer(TArray<uint8>());
+            Writer << bSuccess;
+
+            int32 DataSize = ResultData.Num();
+            Writer << DataSize;
+            if (DataSize > 0)
+            {
+                Writer.Serialize((void*)ResultData.GetData(), DataSize);
+            }
+
+            Writer << ResultMessage;
+            Writer << ResultCode;
+            Writer << Timestamp;
+
+            return Writer.ReleaseOwnership();
+        }
+
+        // 역직렬화
+        bool Deserialize(const TArray<uint8>& Data)
+        {
+            if (Data.Num() == 0)
+            {
+                return false;
+            }
+
+            FMemoryReader Reader(Data);
+            Reader << bSuccess;
+
+            int32 DataSize = 0;
+            Reader << DataSize;
+            if (DataSize > 0)
+            {
+                ResultData.SetNumUninitialized(DataSize);
+                Reader.Serialize(ResultData.GetData(), DataSize);
+            }
+
+            Reader << ResultMessage;
+            Reader << ResultCode;
+            Reader << Timestamp;
+
+            return true;
+        }
+    };
+
+    // 멱등성 처리 결과 캐시
+    TMap<uint16, FIdempotentResult> IdempotentResults;
+
+    // 멱등성 캐시 만료 시간 (초)
+    const float IDEMPOTENT_CACHE_TIMEOUT = 300.0f; // 5분
 };
