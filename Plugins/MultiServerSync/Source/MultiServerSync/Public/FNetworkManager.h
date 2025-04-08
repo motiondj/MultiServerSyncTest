@@ -41,6 +41,10 @@ enum class ENetworkMessageType : uint8
     PingRequest = 30,         // 핑 요청 메시지
     PingResponse = 31,        // 핑 응답 메시지
 
+    // ACK 관련 메시지(새로 추가)
+    ACK = 40,                // 확인 응답 메시지
+    Retransmit = 41,         // 재전송 요청 메시지
+
     Custom = 255      // 사용자 정의 메시지
 };
 
@@ -71,6 +75,20 @@ struct FPingMessage
     EPingMessageType Type;      // 메시지 타입
     uint64 Timestamp;           // 발신 타임스탬프
     uint32 SequenceNumber;      // 시퀀스 번호
+
+    // 직렬화 함수
+    void Serialize(FMemoryWriter& Writer) const;
+
+    // 역직렬화 함수
+    void Deserialize(FMemoryReader& Reader);
+};
+
+// ACK 메시지 구조체
+struct FACKMessage
+{
+    uint16 OriginalSequenceNumber;  // 확인하는 원본 메시지 시퀀스 번호
+    ENetworkMessageType OriginalType;  // 원본 메시지 타입
+    uint64 Timestamp;             // 타임스탬프
 
     // 직렬화 함수
     void Serialize(FMemoryWriter& Writer) const;
@@ -297,7 +315,7 @@ public:
     virtual int32 EvaluateNetworkQuality(const FIPv4Endpoint& ServerEndpoint) const override;
     virtual FString GetNetworkQualityString(const FIPv4Endpoint& ServerEndpoint) const override;
 
-    // 이상치 필터링 관련 메서드
+    // 이상치 필터링 관련 메서드 추가
     virtual void SetOutlierFiltering(const FIPv4Endpoint& ServerEndpoint, bool bEnableFiltering) override;
     virtual bool GetOutlierStats(const FIPv4Endpoint& ServerEndpoint, int32& OutliersDetected, double& OutlierThreshold) const override;
 
@@ -317,6 +335,10 @@ public:
     virtual void SetQualityAssessmentInterval(const FIPv4Endpoint& ServerEndpoint, double IntervalSeconds) override;
     virtual void SetNetworkStateMonitoring(const FIPv4Endpoint& ServerEndpoint, bool bEnable) override;
     virtual bool GetNetworkEventHistory(const FIPv4Endpoint& ServerEndpoint, TArray<ENetworkEventType>& OutEvents) const override;
+
+    // 신뢰성 있는 메시지 전송 함수
+    virtual bool SendReliableMessage(const FIPv4Endpoint& Endpoint, ENetworkMessageType Type, const TArray<uint8>& Data) override;
+    virtual bool BroadcastReliableMessage(ENetworkMessageType Type, const TArray<uint8>& Data) override;
     // End INetworkManager interface
 
     /** Get the list of discovered servers */
@@ -392,6 +414,33 @@ public:
      * @param ServerEndpoint 비활성화할 서버 엔드포인트
      */
     void DisablePeriodicPing(const FIPv4Endpoint& ServerEndpoint);
+
+    // 메시지 시퀀스 관리 관련 상수
+    static const int32 SEQUENCE_WINDOW_SIZE = 64;   // 시퀀스 윈도우 크기
+    static const int32 MAX_MESSAGE_GAP = 16;        // 최대 허용 시퀀스 간격
+    static const int32 SEQUENCE_BUFFER_SIZE = 128;  // 시퀀스 버퍼 크기
+
+    // 서버별 시퀀스 추적을 위한 구조체
+    struct FSequenceTracker
+    {
+        uint16 LastReceivedSeq;                  // 마지막으로 수신한 시퀀스 번호
+        TSet<uint16> ReceivedSequences;          // 수신한 시퀀스 집합
+        TArray<uint16> MissingSequences;         // 누락된 시퀀스 배열
+        double LastGapDetectionTime;             // 마지막 간격 감지 시간
+        bool bSequenceInitialized;               // 시퀀스 초기화 상태
+
+        FSequenceTracker()
+            : LastReceivedSeq(0)
+            , LastGapDetectionTime(0.0)
+            , bSequenceInitialized(false)
+        {
+            ReceivedSequences.Reserve(SEQUENCE_BUFFER_SIZE);
+            MissingSequences.Reserve(MAX_MESSAGE_GAP);
+        }
+    };
+
+    // 서버별 시퀀스 추적
+    TMap<FString, FSequenceTracker> SequenceTrackers;
 
 private:
     /** Broadcast socket for server discovery */
@@ -486,6 +535,38 @@ private:
     // 주기적 핑 상태 관리
     TArray<FPeriodicPingState> PeriodicPingStates;
 
+    // ACK 관련 멤버 변수(새로 추가)
+    struct FMessageState
+    {
+        FNetworkMessage Message;       // 원본 메시지
+        FIPv4Endpoint Recipient;       // 수신자 엔드포인트
+        double SendTime;               // 전송 시간
+        int32 RetryCount;              // 재시도 횟수
+        bool bNeedsACK;                // ACK 필요 여부
+        bool bIsAcknowledged;          // ACK 수신 여부
+
+        FMessageState()
+            : SendTime(0.0)
+            , RetryCount(0)
+            , bNeedsACK(false)
+            , bIsAcknowledged(false)
+        {
+        }
+    };
+
+    // 전송된 메시지 추적을 위한 맵
+    TMap<uint16, FMessageState> SentMessages;
+
+    // 서버별 마지막으로 수신한 메시지 시퀀스 번호
+    TMap<FString, uint16> LastReceivedSequence;
+
+    // ACK 관련 상수
+    static const double ACK_TIMEOUT_SECONDS = 1.0;   // ACK 대기 타임아웃
+    static const int32 MAX_RETRANSMIT_COUNT = 5;     // 최대 재전송 횟수
+
+    // 틱 델리게이트 핸들 - ACK 타임아웃 확인용
+    FTSTicker::FDelegateHandle ACKTimeoutCheckHandle;
+
     /** 소켓 초기화 */
     bool InitializeSockets();
 
@@ -530,6 +611,23 @@ private:
     // 핑 메시지 처리 메서드
     void HandlePingRequest(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint);
     void HandlePingResponse(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint);
+
+    // ACK 관련 함수 (새로 추가)
+    bool SendACK(const FIPv4Endpoint& Endpoint, uint16 SequenceNumber, ENetworkMessageType MessageType);
+    void HandleACKMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void CheckACKTimeouts();
+    bool NeedsACK(ENetworkMessageType MessageType) const;
+    bool TickACKTimeoutCheck(float DeltaTime);
+
+    // 재전송 요청 처리
+    void HandleRetransmitRequest(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+
+    // 재전송 요청 전송
+    bool RequestRetransmission(const FIPv4Endpoint& Endpoint, uint16 SequenceNumber);
+
+    // 메시지 시퀀스 추적 관련 메서드
+    void TrackReceivedMessage(const FString& SenderId, uint16 SequenceNumber, ENetworkMessageType MessageType, const FIPv4Endpoint& SenderEndpoint);
+    bool IsMessageDuplicate(const FString& SenderId, uint16 SequenceNumber);
 
     // 마스터 선출 관련 메서드
     void SendElectionVote(const FString& CandidateId);
@@ -594,4 +692,14 @@ private:
 
     // 연속 타임아웃 리셋
     void ResetConsecutiveTimeouts(const FIPv4Endpoint& ServerEndpoint);
+
+    // 메시지 시퀀스 관리 메서드
+    bool IsSequenceNewer(uint16 Seq1, uint16 Seq2) const;
+    void DetectMissingSequences(const FString& SenderId);
+    void RequestMissingSequences(const FString& SenderId, const FIPv4Endpoint& SenderEndpoint);
+    void CleanupSequenceTrackers();
+    bool TickSequenceTrackerMaintenance(float DeltaTime);
+
+    // 시퀀스 트래커 관리 틱 핸들
+    FTSTicker::FDelegateHandle SequenceMaintenanceTickHandle;
 };
