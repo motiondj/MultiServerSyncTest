@@ -686,9 +686,6 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
             HandleACKMessage(Message, Sender);
             break;
         case ENetworkMessageType::Retransmit:
-            // 재전송 요청은 향후 구현 예정
-            break;
-        case ENetworkMessageType::Retransmit:
             HandleRetransmitRequest(Message, Sender);
             break;
         default:
@@ -1016,7 +1013,7 @@ bool FNetworkManager::SendMessageToEndpoint(const FIPv4Endpoint& Endpoint, const
 bool FNetworkManager::BroadcastMessageToServers(const FNetworkMessage& Message)
 {
     bool bAllSucceeded = true;
-    
+
     for (const auto& Pair : DiscoveredServers)
     {
         FIPv4Endpoint Endpoint(Pair.Value.IPAddress, Pair.Value.Port);
@@ -1025,26 +1022,26 @@ bool FNetworkManager::BroadcastMessageToServers(const FNetworkMessage& Message)
             bAllSucceeded = false;
         }
     }
-    
+
     return bAllSucceeded;
 }
 
 bool FNetworkManager::InitializeSockets()
 {
     UE_LOG(LogMultiServerSync, Display, TEXT("Initializing network sockets..."));
-    
+
     if (!CreateBroadcastSocket())
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create broadcast socket"));
         return false;
     }
-    
+
     if (!CreateReceiveSocket())
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create receive socket"));
         return false;
     }
-    
+
     UE_LOG(LogMultiServerSync, Display, TEXT("Sockets initialized successfully"));
     return true;
 }
@@ -1057,13 +1054,13 @@ bool FNetworkManager::CreateBroadcastSocket()
         .WithBroadcast()
         .WithSendBufferSize(65507) // UDP 최대 크기
         .Build();
-    
+
     if (!BroadcastSocket)
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create broadcast socket"));
         return false;
     }
-    
+
     return true;
 }
 
@@ -1075,20 +1072,20 @@ bool FNetworkManager::CreateReceiveSocket()
         .BoundToPort(Port)
         .WithReceiveBufferSize(65507) // UDP 최대 크기
         .Build();
-    
+
     if (!ReceiveSocket)
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create receive socket"));
         return false;
     }
-    
+
     // 브로드캐스트 수신을 위한 추가 소켓
     FSocket* BroadcastReceiveSocket = FUdpSocketBuilder(TEXT("MultiServerSync_BroadcastReceiveSocket"))
         .AsReusable()
         .BoundToPort(BROADCAST_PORT)
         .WithReceiveBufferSize(65507) // UDP 최대 크기
         .Build();
-    
+
     if (!BroadcastReceiveSocket)
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create broadcast receive socket"));
@@ -1096,11 +1093,11 @@ bool FNetworkManager::CreateReceiveSocket()
         ReceiveSocket = nullptr;
         return false;
     }
-    
+
     // 이미 있는 수신 소켓을 정리하고 브로드캐스트 수신 소켓을 기본 수신 소켓으로 설정
     ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ReceiveSocket);
     ReceiveSocket = BroadcastReceiveSocket;
-    
+
     return true;
 }
 
@@ -1113,7 +1110,7 @@ bool FNetworkManager::StartReceiverThread()
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create receiver worker"));
         return false;
     }
-    
+
     // 수신 스레드 시작
     ReceiverThread = FRunnableThread::Create(ReceiverWorker, TEXT("MultiServerSync_ReceiverThread"));
     if (!ReceiverThread)
@@ -1123,7 +1120,7 @@ bool FNetworkManager::StartReceiverThread()
         ReceiverWorker = nullptr;
         return false;
     }
-    
+
     UE_LOG(LogMultiServerSync, Display, TEXT("Receiver thread started"));
     return true;
 }
@@ -1133,7 +1130,7 @@ FServerEndpoint FNetworkManager::CreateLocalServerInfo() const
     FServerEndpoint Info;
     Info.Id = HostName;
     Info.HostName = HostName;
-    
+
     // 로컬 IP 주소 가져오기
     bool bCanBindAll = false;
     TSharedPtr<FInternetAddr> LocalAddr = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetLocalHostAddr(*GLog, bCanBindAll);
@@ -1143,12 +1140,12 @@ FServerEndpoint FNetworkManager::CreateLocalServerInfo() const
         LocalAddr->GetIp(LocalIP);
         Info.IPAddress = FIPv4Address(LocalIP);
     }
-    
+
     Info.Port = Port;
     Info.ProjectId = ProjectId;
     Info.ProjectVersion = ProjectVersion;
     Info.LastCommunicationTime = FPlatformTime::Seconds();
-    
+
     return Info;
 }
 
@@ -1156,9 +1153,9 @@ void FNetworkManager::CleanupServerList()
 {
     const double CurrentTime = FPlatformTime::Seconds();
     const double TimeoutSeconds = 10.0; // 10초 이상 통신이 없으면 제거
-    
+
     TArray<FString> ServersToRemove;
-    
+
     for (const auto& Pair : DiscoveredServers)
     {
         if (CurrentTime - Pair.Value.LastCommunicationTime > TimeoutSeconds)
@@ -1166,7 +1163,7 @@ void FNetworkManager::CleanupServerList()
             ServersToRemove.Add(Pair.Key);
         }
     }
-    
+
     for (const FString& ServerId : ServersToRemove)
     {
         DiscoveredServers.Remove(ServerId);
@@ -1178,14 +1175,14 @@ void FNetworkManager::HandleDiscoveryMessage(const FNetworkMessage& Message, con
 {
     // 디스커버리 요청에 응답
     UE_LOG(LogMultiServerSync, Display, TEXT("Discovery message received from %s"), *Sender.ToString());
-    
+
     // 발신자 정보 파싱
     FString SenderHostName;
     if (Message.GetData().Num() > 0)
     {
         SenderHostName = FString((TCHAR*)Message.GetData().GetData(), Message.GetData().Num() / sizeof(TCHAR));
     }
-    
+
     // 서버 정보 생성
     FServerEndpoint ServerInfo;
     ServerInfo.Id = SenderHostName.IsEmpty() ? Sender.ToString() : SenderHostName;
@@ -1194,10 +1191,10 @@ void FNetworkManager::HandleDiscoveryMessage(const FNetworkMessage& Message, con
     ServerInfo.Port = Sender.Port;
     ServerInfo.ProjectId = Message.GetProjectId();
     ServerInfo.LastCommunicationTime = FPlatformTime::Seconds();
-    
+
     // 서버 목록에 추가
     AddOrUpdateServer(ServerInfo);
-    
+
     // 디스커버리 응답 전송
     SendDiscoveryResponse(Sender);
 }
@@ -1321,12 +1318,12 @@ void FNetworkManager::HandleCommandMessage(const FNetworkMessage& Message, const
                 break;
             }
         }
-        
+
         if (SenderId.IsEmpty())
         {
             SenderId = Sender.ToString();
         }
-        
+
         // 메시지 핸들러 호출
         MessageHandler(SenderId, Message.GetData());
     }
@@ -1352,13 +1349,13 @@ uint16 FNetworkManager::GetNextSequenceNumber()
 bool FNetworkManager::HasEnoughTimePassed(double& LastTime, double Interval) const
 {
     const double CurrentTime = FPlatformTime::Seconds();
-    
+
     if (CurrentTime - LastTime >= Interval)
     {
         LastTime = CurrentTime;
         return true;
     }
-    
+
     return false;
 }
 
@@ -2297,7 +2294,6 @@ void FNetworkManager::HandlePingRequest(const TSharedPtr<FMemoryReader>& ReaderP
     SendPingResponse(RequestMessage, SourceEndpoint);
 }
 
-// 약 4270줄 근처, HandlePingResponse 메서드 수정
 void FNetworkManager::HandlePingResponse(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint)
 {
     // 응답 메시지 파싱
@@ -2471,7 +2467,6 @@ void FNetworkManager::DisablePeriodicPing(const FIPv4Endpoint& ServerEndpoint)
 }
 
 // 핑 타이머 틱 함수 구현
-// 약 4350줄 근처, TickLatencyMeasurement 함수 수정
 bool FNetworkManager::TickLatencyMeasurement(float DeltaTime)
 {
     // 활성화된 핑 상태가 없으면 틱 비활성화

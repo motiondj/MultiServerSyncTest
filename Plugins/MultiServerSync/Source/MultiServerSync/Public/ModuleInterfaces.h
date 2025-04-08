@@ -49,10 +49,10 @@ public:
     virtual bool BroadcastMessage(const TArray<uint8>& Message) = 0;
 
     // 신뢰성 있는 메시지 전송(ACK 확인 대기)
-    virtual bool SendReliableMessage(const FIPv4Endpoint & Endpoint, ENetworkMessageType Type, const TArray<uint8>&Message) = 0;
+    virtual bool SendReliableMessage(const FIPv4Endpoint& Endpoint, ENetworkMessageType MessageType, const TArray<uint8>& MessageData) = 0;
 
     // 신뢰성 있는 브로드캐스트 (모든 서버에 신뢰성 있는 메시지 전송)
-    virtual bool BroadcastReliableMessage(ENetworkMessageType Type, const TArray<uint8>& Message) = 0;
+    virtual bool BroadcastReliableMessage(ENetworkMessageType MessageType, const TArray<uint8>& MessageData) = 0;
 
     // Register a message handler callback
     virtual void RegisterMessageHandler(TFunction<void(const FString&, const TArray<uint8>&)> Handler) = 0;

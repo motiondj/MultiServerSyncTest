@@ -561,7 +561,7 @@ private:
     TMap<FString, uint16> LastReceivedSequence;
 
     // ACK 관련 상수
-    static const double ACK_TIMEOUT_SECONDS = 1.0;   // ACK 대기 타임아웃
+    static inline const double ACK_TIMEOUT_SECONDS = 1.0;  // ACK 대기 타임아웃
     static const int32 MAX_RETRANSMIT_COUNT = 5;     // 최대 재전송 횟수
 
     // 틱 델리게이트 핸들 - ACK 타임아웃 확인용

@@ -2,6 +2,36 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "NetworkTypes.generated.h"
+
+/**
+ * 네트워크 메시지 유형
+ * 시스템 간 통신에 사용되는 메시지 타입
+ */
+UENUM(BlueprintType)
+enum class ENetworkMessageType : uint8
+{
+    None = 0,
+    Sync,
+    SyncResponse,
+    FollowUp,
+    DelayReq,
+    DelayResp,
+    MasterAnnouncement,
+    MasterQuery,
+    MasterResponse,
+    MasterElection,
+    MasterVote,
+    MasterResign,
+    RoleChange,
+    PingRequest,
+    PingResponse,
+    SettingsUpdate,
+    FrameSyncMessage,
+    ACK,
+    Retransmit,
+    // 추가 필요한 메시지 타입
+};
 
 /**
  * 네트워크 지연 시간의 단일 시계열 샘플
