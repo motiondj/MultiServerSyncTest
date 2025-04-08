@@ -334,24 +334,6 @@ bool FNetworkManager::Initialize()
         PingTimeoutCheckHandle.Reset();
     }
 
-    SentMessages.Empty();
-    if (ACKTimeoutCheckHandle.IsValid())
-    {
-        FTSTicker::GetCoreTicker().RemoveTicker(ACKTimeoutCheckHandle);
-        ACKTimeoutCheckHandle.Reset();
-    }
-
-    // 메시지 시퀀스 추적 초기화
-    LastReceivedSequence.Empty();
-
-    // 시퀀스 트래커 초기화
-    SequenceTrackers.Empty();
-
-    // 시퀀스 트래커 관리 틱 등록
-    SequenceMaintenanceTickHandle = FTSTicker::GetCoreTicker().AddTicker(
-        FTickerDelegate::CreateRaw(this, &FNetworkManager::TickSequenceTrackerMaintenance),
-        10.0f); // 10초마다 틱
-
     return true;
 }
 
@@ -452,27 +434,6 @@ void FNetworkManager::Shutdown()
         FTSTicker::GetCoreTicker().RemoveTicker(QualityAssessmentTickHandle);
         QualityAssessmentTickHandle.Reset();
     }
-
-    // ACK 관련 정리
-    SentMessages.Empty();
-    if (ACKTimeoutCheckHandle.IsValid())
-    {
-        FTSTicker::GetCoreTicker().RemoveTicker(ACKTimeoutCheckHandle);
-        ACKTimeoutCheckHandle.Reset();
-    }
-
-    // 메시지 시퀀스 추적 정리
-    LastReceivedSequence.Empty();
-
-    // 시퀀스 트래커 정리
-    SequenceTrackers.Empty();
-
-    // 시퀀스 트래커 관리 틱 해제
-    if (SequenceMaintenanceTickHandle.IsValid())
-    {
-        FTSTicker::GetCoreTicker().RemoveTicker(SequenceMaintenanceTickHandle);
-        SequenceMaintenanceTickHandle.Reset();
-    }
 }
 
 bool FNetworkManager::SendMessage(const FString& EndpointId, const TArray<uint8>& Message)
@@ -561,51 +522,6 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
         return;
     }
 
-    // ACK가 필요한 메시지라면 ACK 응답 전송 (ACK 메시지 자체는 제외)
-    if (Message.GetType() != ENetworkMessageType::ACK && NeedsACK(Message.GetType()))
-    {
-        SendACK(Sender, Message.GetSequenceNumber(), Message.GetType());
-    }
-
-    // 발신자 식별
-    FString SenderId;
-    for (const auto& Pair : DiscoveredServers)
-    {
-        if (Pair.Value.IPAddress == Sender.Address && Pair.Value.Port == Sender.Port)
-        {
-            SenderId = Pair.Key;
-            break;
-        }
-    }
-
-    if (SenderId.IsEmpty())
-    {
-        SenderId = Sender.ToString();
-    }
-
-    // 메시지 시퀀스 추적 (중복 메시지 확인)
-    bool bIsDuplicate = IsMessageDuplicate(SenderId, Message.GetSequenceNumber());
-
-    // ACK가 필요한 메시지이면 항상 ACK 응답 (중복이라도)
-    if (Message.GetType() != ENetworkMessageType::ACK && NeedsACK(Message.GetType()))
-    {
-        SendACK(Sender, Message.GetSequenceNumber(), Message.GetType());
-
-        // 중복 메시지는 여기서 처리 종료
-        if (bIsDuplicate)
-        {
-            UE_LOG(LogMultiServerSync, Verbose, TEXT("Ignoring duplicate message (Seq: %u, Type: %d) from %s"),
-                Message.GetSequenceNumber(), static_cast<int>(Message.GetType()), *SenderId);
-            return;
-        }
-    }
-
-    // 메시지 시퀀스 업데이트 (중복이 아닌 경우만)
-    if (!bIsDuplicate && Message.GetType() != ENetworkMessageType::ACK)
-    {
-        TrackReceivedMessage(SenderId, Message.GetSequenceNumber(), Message.GetType(), Sender);
-    }
-
     // 메시지 역직렬화
     FNetworkMessage DeserializedMessage;
     if (DeserializedMessage.Deserialize(Data))
@@ -682,12 +598,6 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
             HandlePingResponse(Reader, Sender);
         }
         break;
-        case ENetworkMessageType::ACK:
-            HandleACKMessage(Message, Sender);
-            break;
-        case ENetworkMessageType::Retransmit:
-            HandleRetransmitRequest(Message, Sender);
-            break;
         default:
             UE_LOG(LogMultiServerSync, Warning, TEXT("Unknown message type received: %d"), (int)Message.GetType());
             break;
@@ -985,35 +895,13 @@ bool FNetworkManager::SendMessageToEndpoint(const FIPv4Endpoint& Endpoint, const
         return false;
     }
 
-    // ACK가 필요한 메시지이고 아직 추적 중이 아니라면 추적 목록에 추가
-    if (bSuccess && NeedsACK(Message.GetType()) && !SentMessages.Contains(Message.GetSequenceNumber()))
-    {
-        FMessageState MessageState;
-        MessageState.Message = Message;
-        MessageState.Recipient = Endpoint;
-        MessageState.SendTime = FPlatformTime::Seconds();
-        MessageState.RetryCount = 0;
-        MessageState.bNeedsACK = true;
-        MessageState.bIsAcknowledged = false;
-
-        SentMessages.Add(Message.GetSequenceNumber(), MessageState);
-
-        // ACK 타임아웃 체크 활성화
-        if (!ACKTimeoutCheckHandle.IsValid())
-        {
-            ACKTimeoutCheckHandle = FTSTicker::GetCoreTicker().AddTicker(
-                FTickerDelegate::CreateRaw(this, &FNetworkManager::TickACKTimeoutCheck),
-                0.5f); // 0.5초마다 체크
-        }
-    }
-
     return true;
 }
 
 bool FNetworkManager::BroadcastMessageToServers(const FNetworkMessage& Message)
 {
     bool bAllSucceeded = true;
-
+    
     for (const auto& Pair : DiscoveredServers)
     {
         FIPv4Endpoint Endpoint(Pair.Value.IPAddress, Pair.Value.Port);
@@ -1022,26 +910,26 @@ bool FNetworkManager::BroadcastMessageToServers(const FNetworkMessage& Message)
             bAllSucceeded = false;
         }
     }
-
+    
     return bAllSucceeded;
 }
 
 bool FNetworkManager::InitializeSockets()
 {
     UE_LOG(LogMultiServerSync, Display, TEXT("Initializing network sockets..."));
-
+    
     if (!CreateBroadcastSocket())
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create broadcast socket"));
         return false;
     }
-
+    
     if (!CreateReceiveSocket())
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create receive socket"));
         return false;
     }
-
+    
     UE_LOG(LogMultiServerSync, Display, TEXT("Sockets initialized successfully"));
     return true;
 }
@@ -1054,13 +942,13 @@ bool FNetworkManager::CreateBroadcastSocket()
         .WithBroadcast()
         .WithSendBufferSize(65507) // UDP 최대 크기
         .Build();
-
+    
     if (!BroadcastSocket)
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create broadcast socket"));
         return false;
     }
-
+    
     return true;
 }
 
@@ -1072,20 +960,20 @@ bool FNetworkManager::CreateReceiveSocket()
         .BoundToPort(Port)
         .WithReceiveBufferSize(65507) // UDP 최대 크기
         .Build();
-
+    
     if (!ReceiveSocket)
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create receive socket"));
         return false;
     }
-
+    
     // 브로드캐스트 수신을 위한 추가 소켓
     FSocket* BroadcastReceiveSocket = FUdpSocketBuilder(TEXT("MultiServerSync_BroadcastReceiveSocket"))
         .AsReusable()
         .BoundToPort(BROADCAST_PORT)
         .WithReceiveBufferSize(65507) // UDP 최대 크기
         .Build();
-
+    
     if (!BroadcastReceiveSocket)
     {
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create broadcast receive socket"));
@@ -1093,11 +981,11 @@ bool FNetworkManager::CreateReceiveSocket()
         ReceiveSocket = nullptr;
         return false;
     }
-
+    
     // 이미 있는 수신 소켓을 정리하고 브로드캐스트 수신 소켓을 기본 수신 소켓으로 설정
     ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->DestroySocket(ReceiveSocket);
     ReceiveSocket = BroadcastReceiveSocket;
-
+    
     return true;
 }
 
@@ -1110,7 +998,7 @@ bool FNetworkManager::StartReceiverThread()
         UE_LOG(LogMultiServerSync, Error, TEXT("Failed to create receiver worker"));
         return false;
     }
-
+    
     // 수신 스레드 시작
     ReceiverThread = FRunnableThread::Create(ReceiverWorker, TEXT("MultiServerSync_ReceiverThread"));
     if (!ReceiverThread)
@@ -1120,7 +1008,7 @@ bool FNetworkManager::StartReceiverThread()
         ReceiverWorker = nullptr;
         return false;
     }
-
+    
     UE_LOG(LogMultiServerSync, Display, TEXT("Receiver thread started"));
     return true;
 }
@@ -1130,7 +1018,7 @@ FServerEndpoint FNetworkManager::CreateLocalServerInfo() const
     FServerEndpoint Info;
     Info.Id = HostName;
     Info.HostName = HostName;
-
+    
     // 로컬 IP 주소 가져오기
     bool bCanBindAll = false;
     TSharedPtr<FInternetAddr> LocalAddr = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->GetLocalHostAddr(*GLog, bCanBindAll);
@@ -1140,12 +1028,12 @@ FServerEndpoint FNetworkManager::CreateLocalServerInfo() const
         LocalAddr->GetIp(LocalIP);
         Info.IPAddress = FIPv4Address(LocalIP);
     }
-
+    
     Info.Port = Port;
     Info.ProjectId = ProjectId;
     Info.ProjectVersion = ProjectVersion;
     Info.LastCommunicationTime = FPlatformTime::Seconds();
-
+    
     return Info;
 }
 
@@ -1153,9 +1041,9 @@ void FNetworkManager::CleanupServerList()
 {
     const double CurrentTime = FPlatformTime::Seconds();
     const double TimeoutSeconds = 10.0; // 10초 이상 통신이 없으면 제거
-
+    
     TArray<FString> ServersToRemove;
-
+    
     for (const auto& Pair : DiscoveredServers)
     {
         if (CurrentTime - Pair.Value.LastCommunicationTime > TimeoutSeconds)
@@ -1163,7 +1051,7 @@ void FNetworkManager::CleanupServerList()
             ServersToRemove.Add(Pair.Key);
         }
     }
-
+    
     for (const FString& ServerId : ServersToRemove)
     {
         DiscoveredServers.Remove(ServerId);
@@ -1175,14 +1063,14 @@ void FNetworkManager::HandleDiscoveryMessage(const FNetworkMessage& Message, con
 {
     // 디스커버리 요청에 응답
     UE_LOG(LogMultiServerSync, Display, TEXT("Discovery message received from %s"), *Sender.ToString());
-
+    
     // 발신자 정보 파싱
     FString SenderHostName;
     if (Message.GetData().Num() > 0)
     {
         SenderHostName = FString((TCHAR*)Message.GetData().GetData(), Message.GetData().Num() / sizeof(TCHAR));
     }
-
+    
     // 서버 정보 생성
     FServerEndpoint ServerInfo;
     ServerInfo.Id = SenderHostName.IsEmpty() ? Sender.ToString() : SenderHostName;
@@ -1191,10 +1079,10 @@ void FNetworkManager::HandleDiscoveryMessage(const FNetworkMessage& Message, con
     ServerInfo.Port = Sender.Port;
     ServerInfo.ProjectId = Message.GetProjectId();
     ServerInfo.LastCommunicationTime = FPlatformTime::Seconds();
-
+    
     // 서버 목록에 추가
     AddOrUpdateServer(ServerInfo);
-
+    
     // 디스커버리 응답 전송
     SendDiscoveryResponse(Sender);
 }
@@ -1293,8 +1181,7 @@ bool FNetworkManager::SendTimeSyncMessage(const TArray<uint8>& PTPMessage)
     Message.SetProjectId(ProjectId);
     Message.SetSequenceNumber(GetNextSequenceNumber());
 
-    // 시간 동기화 메시지는 중요하지만 ACK가 필요하지는 않음
-    // 일반 브로드캐스트 사용
+    // 모든 서버에 브로드캐스트
     return BroadcastMessageToServers(Message);
 }
 
@@ -1318,12 +1205,12 @@ void FNetworkManager::HandleCommandMessage(const FNetworkMessage& Message, const
                 break;
             }
         }
-
+        
         if (SenderId.IsEmpty())
         {
             SenderId = Sender.ToString();
         }
-
+        
         // 메시지 핸들러 호출
         MessageHandler(SenderId, Message.GetData());
     }
@@ -1349,13 +1236,13 @@ uint16 FNetworkManager::GetNextSequenceNumber()
 bool FNetworkManager::HasEnoughTimePassed(double& LastTime, double Interval) const
 {
     const double CurrentTime = FPlatformTime::Seconds();
-
+    
     if (CurrentTime - LastTime >= Interval)
     {
         LastTime = CurrentTime;
         return true;
     }
-
+    
     return false;
 }
 
@@ -2294,6 +2181,7 @@ void FNetworkManager::HandlePingRequest(const TSharedPtr<FMemoryReader>& ReaderP
     SendPingResponse(RequestMessage, SourceEndpoint);
 }
 
+// 약 4270줄 근처, HandlePingResponse 메서드 수정
 void FNetworkManager::HandlePingResponse(const TSharedPtr<FMemoryReader>& ReaderPtr, const FIPv4Endpoint& SourceEndpoint)
 {
     // 응답 메시지 파싱
@@ -2467,6 +2355,7 @@ void FNetworkManager::DisablePeriodicPing(const FIPv4Endpoint& ServerEndpoint)
 }
 
 // 핑 타이머 틱 함수 구현
+// 약 4350줄 근처, TickLatencyMeasurement 함수 수정
 bool FNetworkManager::TickLatencyMeasurement(float DeltaTime)
 {
     // 활성화된 핑 상태가 없으면 틱 비활성화
@@ -3283,579 +3172,4 @@ bool FNetworkManager::CheckQualityAssessments(float DeltaTime)
     }
 
     return true;  // 계속 틱 유지
-}
-
-// ACK 메시지 직렬화 함수
-void FACKMessage::Serialize(FMemoryWriter& Writer) const
-{
-    // 원본 메시지 시퀀스 번호 직렬화
-    Writer << OriginalSequenceNumber;
-
-    // 원본 메시지 타입 직렬화
-    uint8 TypeValue = static_cast<uint8>(OriginalType);
-    Writer << TypeValue;
-
-    // 타임스탬프 직렬화
-    Writer << Timestamp;
-}
-
-// ACK 메시지 역직렬화 함수
-void FACKMessage::Deserialize(FMemoryReader& Reader)
-{
-    // 원본 메시지 시퀀스 번호 역직렬화
-    Reader << OriginalSequenceNumber;
-
-    // 원본 메시지 타입 역직렬화
-    uint8 TypeValue;
-    Reader << TypeValue;
-    OriginalType = static_cast<ENetworkMessageType>(TypeValue);
-
-    // 타임스탬프 역직렬화
-    Reader << Timestamp;
-}
-
-// 메시지 유형이 ACK가 필요한지 확인
-bool FNetworkManager::NeedsACK(ENetworkMessageType MessageType) const
-{
-    // ACK가 필요한 메시지 유형 목록
-    switch (MessageType)
-    {
-    case ENetworkMessageType::Command:
-    case ENetworkMessageType::SettingsSync:
-    case ENetworkMessageType::MasterAnnouncement:
-    case ENetworkMessageType::MasterElection:
-    case ENetworkMessageType::MasterVote:
-    case ENetworkMessageType::MasterResign:
-    case ENetworkMessageType::RoleChange:
-    case ENetworkMessageType::Retransmit:
-        return true;
-    default:
-        return false;
-    }
-}
-
-// ACK 메시지 전송
-bool FNetworkManager::SendACK(const FIPv4Endpoint& Endpoint, uint16 SequenceNumber, ENetworkMessageType MessageType)
-{
-    // ACK 메시지 생성
-    FACKMessage ACKMsg;
-    ACKMsg.OriginalSequenceNumber = SequenceNumber;
-    ACKMsg.OriginalType = MessageType;
-    ACKMsg.Timestamp = GetHighPrecisionTimestamp();
-
-    // 메시지 직렬화
-    TArray<uint8> MessageData;
-    FMemoryWriter Writer(MessageData);
-    ACKMsg.Serialize(Writer);
-
-    // 네트워크 메시지 생성
-    FNetworkMessage NetworkMessage(ENetworkMessageType::ACK, MessageData);
-    NetworkMessage.SetProjectId(ProjectId);
-    NetworkMessage.SetSequenceNumber(GetNextSequenceNumber());
-
-    // ACK 메시지는 자체적으로 ACK가 필요하지 않음
-
-    // 메시지 전송
-    UE_LOG(LogMultiServerSync, Verbose, TEXT("Sending ACK for message (Seq: %u, Type: %d) to %s"),
-        SequenceNumber, static_cast<int>(MessageType), *Endpoint.ToString());
-
-    return SendMessageToEndpoint(Endpoint, NetworkMessage);
-}
-
-// 신뢰성 있는 메시지 전송 (ACK 필요)
-bool FNetworkManager::SendReliableMessage(const FIPv4Endpoint& Endpoint, ENetworkMessageType Type, const TArray<uint8>& Data)
-{
-    if (!bIsInitialized)
-    {
-        UE_LOG(LogMultiServerSync, Warning, TEXT("Cannot send reliable message: Network manager not initialized"));
-        return false;
-    }
-
-    // 메시지 생성
-    FNetworkMessage Message(Type, Data);
-    Message.SetProjectId(ProjectId);
-    uint16 SequenceNumber = GetNextSequenceNumber();
-    Message.SetSequenceNumber(SequenceNumber);
-
-    // 메시지 상태 생성 및 저장
-    FMessageState MessageState;
-    MessageState.Message = Message;
-    MessageState.Recipient = Endpoint;
-    MessageState.SendTime = FPlatformTime::Seconds();
-    MessageState.RetryCount = 0;
-    MessageState.bNeedsACK = true;
-    MessageState.bIsAcknowledged = false;
-
-    // 전송된 메시지 맵에 추가
-    SentMessages.Add(SequenceNumber, MessageState);
-
-    // ACK 타임아웃 체크 활성화
-    if (!ACKTimeoutCheckHandle.IsValid())
-    {
-        ACKTimeoutCheckHandle = FTSTicker::GetCoreTicker().AddTicker(
-            FTickerDelegate::CreateRaw(this, &FNetworkManager::TickACKTimeoutCheck),
-            0.5f); // 0.5초마다 체크
-    }
-
-    UE_LOG(LogMultiServerSync, Verbose, TEXT("Sending reliable message (Seq: %u, Type: %d) to %s"),
-        SequenceNumber, static_cast<int>(Type), *Endpoint.ToString());
-
-    // 메시지 전송
-    return SendMessageToEndpoint(Endpoint, Message);
-}
-
-// 신뢰성 있는 브로드캐스트 (ACK 필요)
-bool FNetworkManager::BroadcastReliableMessage(ENetworkMessageType Type, const TArray<uint8>& Data)
-{
-    if (!bIsInitialized)
-    {
-        UE_LOG(LogMultiServerSync, Warning, TEXT("Cannot broadcast reliable message: Network manager not initialized"));
-        return false;
-    }
-
-    bool bAllSucceeded = true;
-
-    // 각 서버에 개별적으로 신뢰성 있는 메시지 전송
-    for (const auto& Pair : DiscoveredServers)
-    {
-        FIPv4Endpoint Endpoint(Pair.Value.IPAddress, Pair.Value.Port);
-        if (!SendReliableMessage(Endpoint, Type, Data))
-        {
-            bAllSucceeded = false;
-        }
-    }
-
-    return bAllSucceeded;
-}
-
-// ACK 메시지 처리
-void FNetworkManager::HandleACKMessage(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
-{
-    // ACK 메시지 데이터 파싱
-    if (Message.GetData().Num() == 0)
-    {
-        UE_LOG(LogMultiServerSync, Warning, TEXT("Received empty ACK message from %s"), *Sender.ToString());
-        return;
-    }
-
-    // ACK 메시지 역직렬화
-    FACKMessage ACKMsg;
-    FMemoryReader Reader(Message.GetData());
-    ACKMsg.Deserialize(Reader);
-
-    // 원본 메시지 찾기
-    if (SentMessages.Contains(ACKMsg.OriginalSequenceNumber))
-    {
-        // 메시지 상태 업데이트
-        FMessageState& MsgState = SentMessages[ACKMsg.OriginalSequenceNumber];
-
-        // 원본 메시지 타입 확인
-        if (MsgState.Message.GetType() == ACKMsg.OriginalType)
-        {
-            MsgState.bIsAcknowledged = true;
-
-            UE_LOG(LogMultiServerSync, Verbose, TEXT("Received ACK for message (Seq: %u, Type: %d) from %s"),
-                ACKMsg.OriginalSequenceNumber, static_cast<int>(ACKMsg.OriginalType), *Sender.ToString());
-
-            // 확인된 메시지는 맵에서 제거해도 안전함
-            // 하지만 일단 보관하고 주기적으로 정리할 수도 있음
-        }
-    }
-}
-
-// ACK 타임아웃 체크
-void FNetworkManager::CheckACKTimeouts()
-{
-    if (SentMessages.Num() == 0)
-        return;
-
-    double CurrentTime = FPlatformTime::Seconds();
-    TArray<uint16> MessagesToRemove;
-
-    // 모든 전송된 메시지 검사
-    for (auto& Pair : SentMessages)
-    {
-        uint16 SequenceNumber = Pair.Key;
-        FMessageState& MessageState = Pair.Value;
-
-        // 이미 확인된 메시지는 건너뜀
-        if (MessageState.bIsAcknowledged)
-        {
-            // 충분한 시간이 지난 확인된 메시지는 제거 목록에 추가
-            if (CurrentTime - MessageState.SendTime > ACK_TIMEOUT_SECONDS * 2)
-            {
-                MessagesToRemove.Add(SequenceNumber);
-            }
-            continue;
-        }
-
-        // ACK가 필요하지 않은 메시지는 일정 시간 후 제거
-        if (!MessageState.bNeedsACK)
-        {
-            if (CurrentTime - MessageState.SendTime > ACK_TIMEOUT_SECONDS)
-            {
-                MessagesToRemove.Add(SequenceNumber);
-            }
-            continue;
-        }
-
-        // 타임아웃 체크
-        if (CurrentTime - MessageState.SendTime > ACK_TIMEOUT_SECONDS)
-        {
-            // 최대 재전송 횟수 초과 시 제거
-            if (MessageState.RetryCount >= MAX_RETRANSMIT_COUNT)
-            {
-                UE_LOG(LogMultiServerSync, Warning, TEXT("Message (Seq: %u, Type: %d) to %s failed after %d retries"),
-                    SequenceNumber, static_cast<int>(MessageState.Message.GetType()),
-                    *MessageState.Recipient.ToString(), MessageState.RetryCount);
-
-                MessagesToRemove.Add(SequenceNumber);
-                continue;
-            }
-
-            // 메시지 재전송
-            UE_LOG(LogMultiServerSync, Verbose, TEXT("Retransmitting message (Seq: %u, Type: %d) to %s (retry %d/%d)"),
-                SequenceNumber, static_cast<int>(MessageState.Message.GetType()),
-                *MessageState.Recipient.ToString(), MessageState.RetryCount + 1, MAX_RETRANSMIT_COUNT);
-
-            SendMessageToEndpoint(MessageState.Recipient, MessageState.Message);
-
-            // 상태 업데이트
-            MessageState.SendTime = CurrentTime;
-            MessageState.RetryCount++;
-        }
-    }
-
-    // 필요한 메시지 제거
-    for (uint16 SeqNum : MessagesToRemove)
-    {
-        SentMessages.Remove(SeqNum);
-    }
-
-    // 남은 메시지가 없고 틱 함수가 등록되어 있으면 제거
-    if (SentMessages.Num() == 0 && ACKTimeoutCheckHandle.IsValid())
-    {
-        FTSTicker::GetCoreTicker().RemoveTicker(ACKTimeoutCheckHandle);
-        ACKTimeoutCheckHandle.Reset();
-    }
-}
-
-// ACK 타임아웃 체크 틱 함수
-bool FNetworkManager::TickACKTimeoutCheck(float DeltaTime)
-{
-    CheckACKTimeouts();
-    return true; // 틱 유지
-}
-
-// 재전송 요청 처리
-void FNetworkManager::HandleRetransmitRequest(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
-{
-    if (Message.GetData().Num() < sizeof(uint16))
-    {
-        UE_LOG(LogMultiServerSync, Warning, TEXT("Received invalid retransmit request from %s"),
-            *Sender.ToString());
-        return;
-    }
-
-    // 재전송 요청된 시퀀스 번호 추출
-    uint16 RequestedSequence = 0;
-    FMemoryReader Reader(Message.GetData());
-    Reader << RequestedSequence;
-
-    UE_LOG(LogMultiServerSync, Display, TEXT("Received retransmit request for message %u from %s"),
-        RequestedSequence, *Sender.ToString());
-
-    // 메시지가 최근 메시지 맵에 있는지 확인
-    if (SentMessages.Contains(RequestedSequence))
-    {
-        FMessageState& MsgState = SentMessages[RequestedSequence];
-
-        // 해당 엔드포인트로 메시지 재전송
-        UE_LOG(LogMultiServerSync, Display, TEXT("Retransmitting message %u to %s"),
-            RequestedSequence, *Sender.ToString());
-
-        SendMessageToEndpoint(Sender, MsgState.Message);
-
-        // 재전송 시간 및 카운터 업데이트
-        MsgState.SendTime = FPlatformTime::Seconds();
-        MsgState.RetryCount++;
-    }
-    else
-    {
-        UE_LOG(LogMultiServerSync, Warning,
-            TEXT("Cannot retransmit message %u: Not found in recent messages"),
-            RequestedSequence);
-    }
-}
-
-// 재전송 요청 전송
-bool FNetworkManager::RequestRetransmission(const FIPv4Endpoint& Endpoint, uint16 SequenceNumber)
-{
-    if (!bIsInitialized)
-    {
-        return false;
-    }
-
-    // 시퀀스 번호를 바이너리 데이터로 변환
-    TArray<uint8> Data;
-    Data.SetNum(sizeof(uint16));
-    FMemory::Memcpy(Data.GetData(), &SequenceNumber, sizeof(uint16));
-
-    // 재전송 요청 메시지 생성
-    FNetworkMessage Message(ENetworkMessageType::Retransmit, Data);
-    Message.SetProjectId(ProjectId);
-    Message.SetSequenceNumber(GetNextSequenceNumber());
-
-    UE_LOG(LogMultiServerSync, Display, TEXT("Requesting retransmission of message %u from %s"),
-        SequenceNumber, *Endpoint.ToString());
-
-    // 요청 전송
-    return SendMessageToEndpoint(Endpoint, Message);
-}
-
-// 수신된 메시지 시퀀스 추적
-void FNetworkManager::TrackReceivedMessage(const FString& SenderId, uint16 SequenceNumber, ENetworkMessageType MessageType, const FIPv4Endpoint& SenderEndpoint)
-{
-    // ACK 메시지는 추적하지 않음
-    if (MessageType == ENetworkMessageType::ACK)
-    {
-        return;
-    }
-
-    // 트래커가 없으면 생성
-    if (!SequenceTrackers.Contains(SenderId))
-    {
-        SequenceTrackers.Add(SenderId, FSequenceTracker());
-    }
-
-    FSequenceTracker& Tracker = SequenceTrackers[SenderId];
-
-    // 이미 처리한 시퀀스인지 확인
-    if (Tracker.ReceivedSequences.Contains(SequenceNumber))
-    {
-        return; // 이미 처리된 메시지면 무시
-    }
-
-    // 첫 메시지인 경우 초기화
-    if (!Tracker.bSequenceInitialized)
-    {
-        Tracker.LastReceivedSeq = SequenceNumber;
-        Tracker.ReceivedSequences.Add(SequenceNumber);
-        Tracker.bSequenceInitialized = true;
-        return;
-    }
-
-    // 새 시퀀스 추가
-    Tracker.ReceivedSequences.Add(SequenceNumber);
-
-    // 버퍼 크기 제한
-    if (Tracker.ReceivedSequences.Num() > SEQUENCE_BUFFER_SIZE)
-    {
-        // 가장 오래된 시퀀스부터 절반 정도 제거
-        int32 RemoveCount = SEQUENCE_BUFFER_SIZE / 2;
-
-        // 정렬된 시퀀스 복사본 생성
-        TArray<uint16> SortedSequences;
-        SortedSequences.Reserve(Tracker.ReceivedSequences.Num());
-
-        for (uint16 Seq : Tracker.ReceivedSequences)
-        {
-            SortedSequences.Add(Seq);
-        }
-
-        // 시퀀스 번호로 정렬 (단순 비교는 래핑 문제가 있어 비교 함수 사용)
-        SortedSequences.Sort([this](uint16 A, uint16 B) {
-            return !IsSequenceNewer(A, B);  // 오래된 것이 앞으로 오도록
-            });
-
-        // 가장 오래된 시퀀스부터 절반 제거
-        for (int32 i = 0; i < RemoveCount && i < SortedSequences.Num(); ++i)
-        {
-            Tracker.ReceivedSequences.Remove(SortedSequences[i]);
-        }
-    }
-
-    // 마지막 수신 시퀀스보다 더 새로운 시퀀스인 경우 업데이트
-    if (IsSequenceNewer(SequenceNumber, Tracker.LastReceivedSeq))
-    {
-        Tracker.LastReceivedSeq = SequenceNumber;
-
-        // 누락된 시퀀스 감지 및 재전송 요청
-        DetectMissingSequences(SenderId);
-        RequestMissingSequences(SenderId, SenderEndpoint);
-    }
-}
-
-// 메시지 중복 수신 확인
-bool FNetworkManager::IsMessageDuplicate(const FString& SenderId, uint16 SequenceNumber)
-{
-    if (!SequenceTrackers.Contains(SenderId))
-    {
-        return false; // 첫 메시지는 중복 아님
-    }
-
-    FSequenceTracker& Tracker = SequenceTrackers[SenderId];
-
-    // 시퀀스 초기화 전이면 중복 아님
-    if (!Tracker.bSequenceInitialized)
-    {
-        return false;
-    }
-
-    // 이미 수신한 시퀀스인지 확인
-    return Tracker.ReceivedSequences.Contains(SequenceNumber);
-}
-
-// 두 시퀀스 번호 비교 (래핑 고려)
-bool FNetworkManager::IsSequenceNewer(uint16 Seq1, uint16 Seq2) const
-{
-    // 시퀀스 번호 차이가 반 이상이면 래핑으로 간주
-    if (Seq1 > Seq2)
-    {
-        return (Seq1 - Seq2 <= 32768); // Seq1이 더 새로움
-    }
-    else if (Seq1 < Seq2)
-    {
-        return (Seq2 - Seq1 > 32768);  // Seq1이 더 새로움 (래핑된 경우)
-    }
-
-    return false; // 동일한 시퀀스
-}
-
-// 누락된 시퀀스 감지
-void FNetworkManager::DetectMissingSequences(const FString& SenderId)
-{
-    if (!SequenceTrackers.Contains(SenderId))
-    {
-        return;
-    }
-
-    FSequenceTracker& Tracker = SequenceTrackers[SenderId];
-
-    // 시퀀스가 초기화되지 않았으면 감지하지 않음
-    if (!Tracker.bSequenceInitialized)
-    {
-        return;
-    }
-
-    // 이전 누락 목록 초기화
-    Tracker.MissingSequences.Empty();
-
-    // 마지막 수신 시퀀스에서 시작
-    uint16 StartSeq = (Tracker.LastReceivedSeq + 1) % 65536;
-    uint16 EndSeq = (Tracker.LastReceivedSeq + MAX_MESSAGE_GAP) % 65536;
-
-    // 윈도우 내 모든 시퀀스 확인
-    for (uint16 Seq = StartSeq; Seq != EndSeq; Seq = (Seq + 1) % 65536)
-    {
-        // 수신하지 않은 시퀀스가 있으면 누락 목록에 추가
-        if (!Tracker.ReceivedSequences.Contains(Seq))
-        {
-            Tracker.MissingSequences.Add(Seq);
-
-            // 누락 시퀀스가 너무 많아지면 중단
-            if (Tracker.MissingSequences.Num() >= MAX_MESSAGE_GAP)
-            {
-                break;
-            }
-        }
-    }
-
-    // 누락된 시퀀스가 있으면 로그 출력
-    if (Tracker.MissingSequences.Num() > 0)
-    {
-        UE_LOG(LogMultiServerSync, Verbose, TEXT("Detected %d missing sequences from %s"),
-            Tracker.MissingSequences.Num(), *SenderId);
-    }
-}
-
-// 누락된 시퀀스 재전송 요청
-void FNetworkManager::RequestMissingSequences(const FString& SenderId, const FIPv4Endpoint& SenderEndpoint)
-{
-    if (!SequenceTrackers.Contains(SenderId))
-    {
-        return;
-    }
-
-    FSequenceTracker& Tracker = SequenceTrackers[SenderId];
-
-    // 누락된 시퀀스가 없으면 요청하지 않음
-    if (Tracker.MissingSequences.Num() == 0)
-    {
-        return;
-    }
-
-    // 마지막 간격 감지 시간 확인 (너무 자주 요청하지 않도록)
-    double CurrentTime = FPlatformTime::Seconds();
-    if (CurrentTime - Tracker.LastGapDetectionTime < 0.5) // 0.5초 이내 재요청 방지
-    {
-        return;
-    }
-
-    Tracker.LastGapDetectionTime = CurrentTime;
-
-    // 최대 3개까지만 재전송 요청 (네트워크 부하 방지)
-    int32 RequestCount = FMath::Min(3, Tracker.MissingSequences.Num());
-    for (int32 i = 0; i < RequestCount; ++i)
-    {
-        uint16 MissingSeq = Tracker.MissingSequences[i];
-
-        UE_LOG(LogMultiServerSync, Verbose, TEXT("Requesting retransmission of sequence %u from %s"),
-            MissingSeq, *SenderId);
-
-        RequestRetransmission(SenderEndpoint, MissingSeq);
-    }
-}
-
-// 시퀀스 트래커 정리
-void FNetworkManager::CleanupSequenceTrackers()
-{
-    double CurrentTime = FPlatformTime::Seconds();
-    TArray<FString> ServersToRemove;
-
-    // 서버별 트래커 중 오래된 서버는 제거
-    for (const auto& Pair : SequenceTrackers)
-    {
-        FString ServerId = Pair.Key;
-
-        // 서버가 아직 발견된 목록에 있는지 확인
-        bool bServerExists = false;
-        for (const auto& ServerPair : DiscoveredServers)
-        {
-            if (ServerPair.Key == ServerId || ServerPair.Value.ToString() == ServerId)
-            {
-                bServerExists = true;
-                break;
-            }
-        }
-
-        // 서버가 더 이상 존재하지 않으면 트래커 제거 목록에 추가
-        if (!bServerExists)
-        {
-            ServersToRemove.Add(ServerId);
-        }
-    }
-
-    // 제거 목록에 있는 트래커 정리
-    for (const FString& ServerId : ServersToRemove)
-    {
-        SequenceTrackers.Remove(ServerId);
-        UE_LOG(LogMultiServerSync, Verbose, TEXT("Removed sequence tracker for server %s"), *ServerId);
-    }
-}
-
-// 시퀀스 트래커 정리 틱 함수
-bool FNetworkManager::TickSequenceTrackerMaintenance(float DeltaTime)
-{
-    static double LastCleanupTime = 0.0;
-    double CurrentTime = FPlatformTime::Seconds();
-
-    // 30초마다 정리
-    if (CurrentTime - LastCleanupTime > 30.0)
-    {
-        CleanupSequenceTrackers();
-        LastCleanupTime = CurrentTime;
-    }
-
-    return true; // 틱 유지
 }
