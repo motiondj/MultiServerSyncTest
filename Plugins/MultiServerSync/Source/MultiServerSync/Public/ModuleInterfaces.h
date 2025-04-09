@@ -116,6 +116,10 @@ public:
     virtual void SetOrderGuaranteed(bool bEnable) = 0;
     virtual bool IsOrderGuaranteed() const = 0;
     virtual TMap<FString, TArray<int32>> GetMissingSequences() const = 0;
+
+    // 멱등성 보장 작업 수행 (중복 메시지에 대한 멱등성 보장)
+    virtual bool ExecuteIdempotentOperation(const FString& OperationId, uint16 SequenceNumber,
+        TFunction<FIdempotentResult()> Operation) = 0;
 };
 
 /**
