@@ -23,14 +23,14 @@ public class MultiServerSyncEditor : ModuleRules
         );
 
         PublicDependencyModuleNames.AddRange(
-            new string[]
-            {
-                "Core",
-                "CoreUObject",
-                "Engine",
-                "MultiServerSync" // 런타임 모듈에 대한 의존성
-            }
-        );
+        new string[]
+        {
+            "Core",
+            "CoreUObject",
+            "Engine",
+            "MultiServerSync" // 런타임 모듈에 대한 의존성
+        }
+);
 
         PrivateDependencyModuleNames.AddRange(
             new string[]
@@ -47,12 +47,20 @@ public class MultiServerSyncEditor : ModuleRules
             }
         );
 
-        bLegacyPublicIncludePaths = false;
-        
-        // 디버그 빌드에서만 최적화를 비활성화
-        if (Target.Configuration == UnrealTargetConfiguration.Debug)
-        {
-            OptimizeCode = CodeOptimization.Never;
+        // 모듈 바인딩 설정
+        PrivateIncludePaths.AddRange(
+        new string[] {
+            // 필요한 경우 MultiServerSync 모듈의 헤더 폴더를 명시적으로 포함
+            Path.Combine(ModuleDirectory, "../MultiServerSync/Public"),
         }
+);
+
+        // 제거: DynamicallyLoadedModuleNames 설정 부분 제거
+        // 이미 PublicDependencyModuleNames에 "MultiServerSync"가 있으므로 
+        // 동적으로 추가할 필요가 없습니다.
+
+        // 추가적인 설정 (필요 시)
+        bLegacyPublicIncludePaths = false;
+        OptimizeCode = CodeOptimization.Never; // 디버깅을 위한 최적화 없음
     }
 }

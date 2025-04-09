@@ -7,23 +7,20 @@
 		{
 			"Name": "MultiServerSyncTest",
 			"Type": "Runtime",
-			"LoadingPhase": "Default",
-			"AdditionalDependencies": [
-				"Engine"
-			]
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [
 		{
 			"Name": "ModelingToolsEditorMode",
-			"Enabled": true
-		},
-		{
-			"Name": "MultiServerSync",
 			"Enabled": true,
 			"TargetAllowList": [
 				"Editor"
 			]
+		},
+		{
+			"Name": "MultiServerSync",
+			"Enabled": true
 		}
 	]
 }

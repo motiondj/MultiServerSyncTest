@@ -558,99 +558,6 @@ struct MULTISERVERSYNC_API FPendingMessage
     }
 };
 
-// 멱등성 처리 결과 구조체
-struct MULTISERVERSYNC_API FIdempotentResult
-{
-public:
-    bool bSuccess;               // 작업 성공 여부
-    TArray<uint8> ResultData;    // 결과 데이터
-    FString ResultMessage;       // 결과 메시지
-    int32 ResultCode;            // 결과 코드
-    double Timestamp;            // 처리 시간
-
-    // 기본 생성자
-    FIdempotentResult()
-        : bSuccess(false)
-        , ResultCode(0)
-        , Timestamp(0.0)
-    {
-    }
-
-    // 성공 결과 생성자
-    static FIdempotentResult Success(const TArray<uint8>& InResultData = TArray<uint8>(), const FString& InResultMessage = TEXT("Success"))
-    {
-        FIdempotentResult Result;
-        Result.bSuccess = true;
-        Result.ResultData = InResultData;
-        Result.ResultMessage = InResultMessage;
-        Result.ResultCode = 0;
-        Result.Timestamp = FPlatformTime::Seconds();
-        return Result;
-    }
-
-    // 실패 결과 생성자
-    static FIdempotentResult Failure(int32 InResultCode = -1, const FString& InResultMessage = TEXT("Failure"))
-    {
-        FIdempotentResult Result;
-        Result.bSuccess = false;
-        Result.ResultMessage = InResultMessage;
-        Result.ResultCode = InResultCode;
-        Result.Timestamp = FPlatformTime::Seconds();
-        return Result;
-    }
-
-    // 직렬화
-    TArray<uint8> Serialize() const
-    {
-        TArray<uint8> Data;
-        FMemoryWriter Writer(Data);
-        
-        bool TempSuccess = bSuccess;
-        TArray<uint8> TempData = ResultData;
-        FString TempMessage = ResultMessage;
-        int32 TempCode = ResultCode;
-        double TempTimestamp = Timestamp;
-        
-        Writer << TempSuccess;
-        Writer << TempData;
-        Writer << TempMessage;
-        Writer << TempCode;
-        Writer << TempTimestamp;
-        
-        return Data;
-    }
-
-    // 역직렬화
-    bool Deserialize(const TArray<uint8>& Data)
-    {
-        if (Data.Num() == 0)
-        {
-            return false;
-        }
-
-        FMemoryReader Reader(Data);
-        bool TempSuccess;
-        TArray<uint8> TempData;
-        FString TempMessage;
-        int32 TempCode;
-        double TempTimestamp;
-
-        Reader << TempSuccess;
-        Reader << TempData;
-        Reader << TempMessage;
-        Reader << TempCode;
-        Reader << TempTimestamp;
-
-        bSuccess = TempSuccess;
-        ResultData = TempData;
-        ResultMessage = TempMessage;
-        ResultCode = TempCode;
-        Timestamp = TempTimestamp;
-
-        return true;
-    }
-};
-
 // 네트워크 지연 통계 구조체
 struct MULTISERVERSYNC_API FNetworkLatencyStats
 {
@@ -697,12 +604,6 @@ struct MULTISERVERSYNC_API FNetworkLatencyStats
     double HighLatencyThreshold;                   // 높은 지연 시간 임계값 (ms)
     double HighJitterThreshold;                    // 높은 지터 임계값 (ms)
     double HighPacketLossThreshold;                // 높은 패킷 손실 임계값 (비율)
-
-    // 멱등성 처리 결과 캐시
-    TMap<uint16, FIdempotentResult> IdempotentResults;
-
-    // 멱등성 캐시 만료 시간 (초)
-    static constexpr float IDEMPOTENT_CACHE_TIMEOUT = 300.0f; // 5분
 
     // 기본 생성자
     FNetworkLatencyStats()
@@ -812,35 +713,5 @@ struct MULTISERVERSYNC_API FNetworkLatencyStats
         HighLatencyThreshold = FMath::Max(50.0, LatencyThreshold);      // 최소 50ms
         HighJitterThreshold = FMath::Max(10.0, JitterThreshold);        // 최소 10ms
         HighPacketLossThreshold = FMath::Clamp(PacketLossThreshold, 0.01, 0.5); // 1%~50%
-    }
-
-    // 멱등성 처리 결과 저장
-    void StoreIdempotentResult(uint16 SequenceNumber, const FIdempotentResult& Result)
-    {
-        IdempotentResults.Add(SequenceNumber, Result);
-    }
-
-    // 멱등성 처리 결과 가져오기
-    bool GetIdempotentResult(uint16 SequenceNumber, FIdempotentResult& OutResult)
-    {
-        if (const FIdempotentResult* Result = IdempotentResults.Find(SequenceNumber))
-        {
-            OutResult = *Result;
-            return true;
-        }
-        return false;
-    }
-
-    // 멱등성 캐시 정리
-    void CleanupIdempotentCache()
-    {
-        const double CurrentTime = FPlatformTime::Seconds();
-        for (auto It = IdempotentResults.CreateIterator(); It; ++It)
-        {
-            if (CurrentTime - It->Value.Timestamp > IDEMPOTENT_CACHE_TIMEOUT)
-            {
-                It.RemoveCurrent();
-            }
-        }
     }
 };
