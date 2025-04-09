@@ -130,8 +130,23 @@ public:
     void SetFlags(uint8 InFlags) { Header.Flags = InFlags; }
 
     // 멱등성 보장 작업 수행 (중복 메시지에 대한 멱등성 보장)
-    virtual bool ExecuteIdempotentOperation(const FString& OperationId, uint16 SequenceNumber,
-        TFunction<FIdempotentResult()> Operation) override;
+    bool ExecuteIdempotentOperation(const FString& OperationId, uint16 SequenceNumber,
+        TFunction<FIdempotentResult()> Operation)
+    {
+        // 멱등성 캐시에서 결과 확인
+        if (FIdempotentResult* CachedResult = IdempotentResults.Find(SequenceNumber))
+        {
+            return CachedResult->bSuccess;
+        }
+
+        // 작업 실행
+        FIdempotentResult Result = Operation();
+        
+        // 결과 캐시
+        IdempotentResults.Add(SequenceNumber, Result);
+        
+        return Result.bSuccess;
+    }
 
 private:
     /** 메시지 헤더 */
@@ -145,6 +160,17 @@ private:
 
     /** 프로토콜 버전 */
     static const uint8 PROTOCOL_VERSION = 1;
+
+    // 멱등성 캐시 관련 멤버 변수
+    TMap<uint16, FIdempotentResult> IdempotentResults;             // 멱등성 처리 결과 캐시
+    FTSTicker::FDelegateHandle IdempotentCacheTickHandle;           // 멱등성 캐시 틱 핸들
+    static constexpr float IDEMPOTENT_CACHE_CLEANUP_INTERVAL = 120.0f;  // 멱등성 캐시 정리 간격 (초)
+
+    // 멱등성 캐시 관련 메서드
+    void StoreIdempotentResult(uint16 SequenceNumber, const FIdempotentResult& Result);
+    bool GetIdempotentResult(uint16 SequenceNumber, FIdempotentResult& OutResult);
+    void CleanupIdempotentCache();
+    bool CheckIdempotentCache(float DeltaTime);
 };
 
 /**
@@ -260,6 +286,29 @@ private:
 
     /** 스레드 동기화 이벤트 */
     FEvent* StopEvent;
+};
+
+/**
+ * 메시지 확인 관련 구조체
+ */
+struct FPendingAck
+{
+    FNetworkMessage Message;
+    FString EndpointId;
+    FDateTime LastRetryTime;
+    int32 RetryCount;
+    
+    FPendingAck() : RetryCount(0) {}
+};
+
+// 캐시된 메시지 구조체
+struct FCachedMessage
+{
+    FNetworkMessage Message;
+    TArray<uint8> Response;
+    double Timestamp;
+    
+    FCachedMessage() : Timestamp(0.0) {}
 };
 
 /**
@@ -411,41 +460,63 @@ public:
     virtual TMap<FString, TArray<int32>> GetMissingSequences() const override;
 
 private:
-    /** Broadcast socket for server discovery */
+    // 멤버 변수 선언
     FSocket* BroadcastSocket;
-
-    /** Receiving socket for messages */
     FSocket* ReceiveSocket;
-
-    /** Thread for receiving messages */
     FRunnableThread* ReceiverThread;
-
-    /** Message handler callback */
     TFunction<void(const FString&, const TArray<uint8>&)> MessageHandler;
-
-    /** 발견된 서버 목록 */
     TMap<FString, FServerEndpoint> DiscoveredServers;
-
-    /** Project unique identifier */
     FGuid ProjectId;
-
-    /** Is the network manager initialized */
     bool bIsInitialized;
-
-    /** 현재 시퀀스 번호 */
     uint16 CurrentSequenceNumber;
-
-    /** 프로젝트 버전 */
     FString ProjectVersion;
-
-    /** 호스트 이름 */
     FString HostName;
-
-    /** 포트 번호 */
     uint16 Port;
-
-    /** 수신 스레드 작업자 */
     FNetworkReceiverWorker* ReceiverWorker;
+
+    // 메시지 확인 관련 멤버 변수
+    TMap<uint16, FPendingAck> PendingAcks;
+    TMap<FString, uint16> EndpointSequences;
+    double LastIdempotentCacheCleanupTime;
+    static constexpr float MESSAGE_RETRY_INTERVAL_SECONDS = 1.0f;
+    static constexpr int32 MAX_RETRY_ATTEMPTS = 3;
+    static constexpr float MESSAGE_TIMEOUT_SECONDS = 5.0f;
+
+    // 시퀀스 관리 관련 멤버 변수
+    bool bOrderGuaranteedEnabled;
+    TMap<FString, FMessageSequenceTracker> EndpointSequenceTrackers;
+    static constexpr float SEQUENCE_MANAGEMENT_INTERVAL = 1.0f;
+
+    // 중복 메시지 추적 관련 멤버 변수
+    TMap<FString, TSet<uint16>> DuplicateMessageTracker;
+    static constexpr float DUPLICATE_TRACKER_CLEANUP_INTERVAL = 60.0f;
+    static constexpr float MESSAGE_DUPLICATE_TIMEOUT = 30.0f;
+
+    // 메시지 캐시 관련 멤버 변수
+    TMap<FString, TMap<uint16, FCachedMessage>> MessageCache;
+    static constexpr float MESSAGE_CACHE_CLEANUP_INTERVAL = 60.0f;
+    static constexpr float MESSAGE_CACHE_TIMEOUT = 300.0f;
+
+    // 틱 핸들러들
+    FTSTicker::FDelegateHandle MessageRetryTickHandle;
+    FTSTicker::FDelegateHandle DuplicateTrackerTickHandle;
+    FTSTicker::FDelegateHandle SequenceManagementTickHandle;
+    FTSTicker::FDelegateHandle MessageCacheTickHandle;
+    FTSTicker::FDelegateHandle IdempotentCacheTickHandle;
+
+    // 멤버 함수 선언
+    void HandleMessageAck(uint16 SequenceNumber, const FString& EndpointId);
+    void HandleMessageAck(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    bool CheckMessageRetry(uint16 SequenceNumber);
+    bool CheckMessageRetries(float DeltaTime);
+    void UpdateEndpointSequence(const FString& EndpointId, uint16 SequenceNumber);
+    bool TrackReceivedSequence(const FIPv4Endpoint& Sender, uint16 SequenceNumber);
+    bool IsMessageInOrder(const FIPv4Endpoint& Sender, uint16 SequenceNumber);
+    void RequestMissingMessages(const FIPv4Endpoint& Sender, const TArray<uint16>& MissingSequences);
+    bool CheckSequenceManagement(float DeltaTime);
+    bool ShouldProcessMessage(const FIPv4Endpoint& Sender, uint16 SequenceNumber);
+    void SendMessageWithAck(const FIPv4Endpoint& Endpoint, const FNetworkMessage& Message);
+    void HandleMessageRetryRequest(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
 
     // 마스터-슬레이브 관련 멤버 변수
     bool bIsMaster;                       // 현재 노드가 마스터인지 여부
@@ -636,264 +707,39 @@ private:
     // 메시지 캐시 정리
     void CleanupMessageCache();
 
-    // 멱등성 캐시 정리 틱 함수
+    // 멱등성 캐시 관련 멤버 변수
+    TMap<uint16, FIdempotentResult> IdempotentResults;             // 멱등성 처리 결과 캐시
+    FTSTicker::FDelegateHandle IdempotentCacheTickHandle;           // 멱등성 캐시 틱 핸들
+    static constexpr float IDEMPOTENT_CACHE_CLEANUP_INTERVAL = 120.0f;  // 멱등성 캐시 정리 간격 (초)
+
+    // 멱등성 캐시 관련 메서드
+    void StoreIdempotentResult(uint16 SequenceNumber, const FIdempotentResult& Result);
+    bool GetIdempotentResult(uint16 SequenceNumber, FIdempotentResult& OutResult);
+    void CleanupIdempotentCache();
     bool CheckIdempotentCache(float DeltaTime);
 
     // 메시지 확인 관련 멤버 변수
-    TMap<uint16, FMessageAckData> PendingAcknowledgements;  // 확인 대기 중인 메시지들
-    TMap<FString, TArray<uint16>> EndpointSequenceMap;     // 엔드포인트별 전송 시퀀스 번호 리스트
-    double LastRetryCheckTime;                            // 마지막 재전송 체크 시간
-    FTSTicker::FDelegateHandle MessageRetryTickHandle;     // 메시지 재전송 틱 핸들
-    const float MESSAGE_RETRY_INTERVAL = 0.5f;             // 재전송 체크 간격 (초)
-    const float MESSAGE_TIMEOUT_SECONDS = 3.0f;            // 메시지 타임아웃 시간 (초)
-    const int32 MAX_RETRY_ATTEMPTS = 3;                   // 최대 재전송 시도 횟수
+    TMap<uint16, FPendingAck> PendingAcks;                // 확인 대기 중인 메시지들
+    TMap<FString, uint16> EndpointSequences;              // 엔드포인트별 시퀀스 번호
+    double LastIdempotentCacheCleanupTime;                // 마지막 멱등성 캐시 정리 시간
+    static constexpr float MESSAGE_RETRY_INTERVAL_SECONDS = 1.0f;  // 메시지 재전송 간격 (초)
+    static constexpr int32 MAX_RETRY_ATTEMPTS = 3;        // 최대 재전송 시도 횟수
+    static constexpr float MESSAGE_TIMEOUT_SECONDS = 5.0f; // 메시지 타임아웃 시간 (초)
 
-    // 메시지 확인 관련 메서드
-    bool SendMessageWithAck(const FIPv4Endpoint& Endpoint, const FNetworkMessage& Message);
+    // 시퀀스 관리 관련 상수
+    static constexpr float SEQUENCE_MANAGEMENT_INTERVAL = 1.0f;
+
+    // 멤버 함수 선언
+    void HandleMessageAck(uint16 SequenceNumber, const FString& EndpointId);
     void HandleMessageAck(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    bool CheckMessageRetry(uint16 SequenceNumber);
     bool CheckMessageRetries(float DeltaTime);
-    void RetryMessage(uint16 SequenceNumber);
-
-    // 시퀀스 관리 관련 멤버 변수
-    TMap<FString, FMessageSequenceTracker> EndpointSequenceTrackers;  // 엔드포인트별 시퀀스 추적기
-    bool bOrderGuaranteedEnabled;                                   // 순서 보장 활성화 여부
-    FTSTicker::FDelegateHandle SequenceManagementTickHandle;         // 시퀀스 관리 틱 핸들
-    const float SEQUENCE_MANAGEMENT_INTERVAL = 1.0f;                // 시퀀스 관리 틱 간격 (초)
-
-    // 시퀀스 관리 관련 메서드
+    void UpdateEndpointSequence(const FString& EndpointId, uint16 SequenceNumber);
     bool TrackReceivedSequence(const FIPv4Endpoint& Sender, uint16 SequenceNumber);
     bool IsMessageInOrder(const FIPv4Endpoint& Sender, uint16 SequenceNumber);
-    void RequestMissingMessages(const FIPv4Endpoint& Endpoint);
-    void HandleMessageRetryRequest(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
+    void RequestMissingMessages(const FIPv4Endpoint& Sender, const TArray<uint16>& MissingSequences);
     bool CheckSequenceManagement(float DeltaTime);
     bool ShouldProcessMessage(const FIPv4Endpoint& Sender, uint16 SequenceNumber);
-
-    // 중복 메시지 추적을 위한 구조체
-    struct FMessageTracker
-    {
-        TMap<FIPv4Endpoint, TSet<uint16>> ProcessedSequences;    // 엔드포인트별 처리된 시퀀스 번호
-        int32 MaxTrackedMessages;                              // 추적할 최대 메시지 수
-        float CleanupIntervalSeconds;                          // 정리 간격 (초)
-        double LastCleanupTime;                                // 마지막 정리 시간
-
-        // 기본 생성자
-        FMessageTracker()
-            : MaxTrackedMessages(1000)
-            , CleanupIntervalSeconds(60.0f)
-            , LastCleanupTime(0.0)
-        {
-        }
-
-        // 메시지 추적 추가
-        void AddProcessedMessage(const FIPv4Endpoint& Endpoint, uint16 SequenceNumber)
-        {
-            if (!ProcessedSequences.Contains(Endpoint))
-            {
-                ProcessedSequences.Add(Endpoint, TSet<uint16>());
-            }
-            ProcessedSequences[Endpoint].Add(SequenceNumber);
-        }
-
-        // 메시지가 처리되었는지 확인
-        bool IsMessageProcessed(const FIPv4Endpoint& Endpoint, uint16 SequenceNumber) const
-        {
-            const TSet<uint16>* SequenceSet = ProcessedSequences.Find(Endpoint);
-            return SequenceSet && SequenceSet->Contains(SequenceNumber);
-        }
-
-        // 추적 데이터 정리
-        void Cleanup()
-        {
-            for (auto& Pair : ProcessedSequences)
-            {
-                if (Pair.Value.Num() > MaxTrackedMessages)
-                {
-                    // 개수 제한에 맞게 오래된 항목부터 제거
-                    // (실제로는 서버당 일정 메모리만 사용하도록 구현)
-                    TArray<uint16> Sequences;
-
-                    // TSet을 TArray로 변환
-                    for (const uint16& Seq : Pair.Value)
-                    {
-                        Sequences.Add(Seq);
-                    }
-
-                    Sequences.Sort(); // 시퀀스 번호 순으로 정렬
-
-                    // 가장 오래된 항목 절반 제거
-                    int32 RemoveCount = Sequences.Num() / 2;
-                    for (int32 i = 0; i < RemoveCount; ++i)
-                    {
-                        Pair.Value.Remove(Sequences[i]);
-                    }
-                }
-            }
-        }
-    };
-
-    // 메시지 캐시 항목 구조체
-    struct FCachedMessage
-    {
-        FNetworkMessage Message;      // 원본 메시지
-        TArray<uint8> ResponseData;   // 이전 처리 결과 (필요한 경우)
-        double Timestamp;             // 캐싱 시간
-
-        FCachedMessage()
-            : Timestamp(0.0)
-        {
-        }
-
-        FCachedMessage(const FNetworkMessage& InMessage, double InTimestamp)
-            : Message(InMessage)
-            , Timestamp(InTimestamp)
-        {
-        }
-    };
-
-    // 메시지 캐싱 관리 구조체
-    struct FMessageCache
-    {
-        TMap<FIPv4Endpoint, TMap<uint16, FCachedMessage>> CachedMessages;  // 엔드포인트 및 시퀀스 번호별 캐시
-        int32 MaxCachedMessagesPerEndpoint;                              // 엔드포인트당 최대 캐시 메시지 수
-        float CacheTimeoutSeconds;                                      // 캐시 항목 타임아웃 (초)
-        double LastCleanupTime;                                          // 마지막 정리 시간
-
-        // 기본 생성자
-        FMessageCache()
-            : MaxCachedMessagesPerEndpoint(100)
-            , CacheTimeoutSeconds(300.0f)  // 5분
-            , LastCleanupTime(0.0)
-        {
-        }
-
-        // 메시지 캐싱
-        void CacheMessage(const FIPv4Endpoint& Endpoint, uint16 SequenceNumber, const FNetworkMessage& Message, const TArray<uint8>& Response = TArray<uint8>())
-        {
-            // 엔드포인트에 대한 캐시 맵 가져오기 또는 생성
-            TMap<uint16, FCachedMessage>& EndpointCache = CachedMessages.FindOrAdd(Endpoint);
-
-            // 현재 시간
-            double CurrentTime = FPlatformTime::Seconds();
-
-            // 이미 캐시된 항목이 있으면 업데이트, 없으면 새로 추가
-            FCachedMessage CachedMsg(Message, CurrentTime);
-            CachedMsg.ResponseData = Response;
-            EndpointCache.Add(SequenceNumber, CachedMsg);
-
-            // 캐시 크기 제한 확인
-            if (EndpointCache.Num() > MaxCachedMessagesPerEndpoint)
-            {
-                // 가장 오래된 항목 찾기
-                uint16 OldestSeq = 0;
-                double OldestTime = DBL_MAX;
-
-                for (const auto& Pair : EndpointCache)
-                {
-                    if (Pair.Value.Timestamp < OldestTime)
-                    {
-                        OldestTime = Pair.Value.Timestamp;
-                        OldestSeq = Pair.Key;
-                    }
-                }
-
-                // 가장 오래된 항목 제거
-                EndpointCache.Remove(OldestSeq);
-            }
-        }
-
-        // 캐시된 메시지 가져오기
-        bool GetCachedMessage(const FIPv4Endpoint& Endpoint, uint16 SequenceNumber, FCachedMessage& OutMessage)
-        {
-            // 엔드포인트에 대한 캐시 맵 찾기
-            TMap<uint16, FCachedMessage>* EndpointCache = CachedMessages.Find(Endpoint);
-            if (!EndpointCache)
-            {
-                return false;
-            }
-
-            // 시퀀스 번호에 해당하는 캐시 항목 찾기
-            FCachedMessage* CachedMsg = EndpointCache->Find(SequenceNumber);
-            if (!CachedMsg)
-            {
-                return false;
-            }
-
-            // 타임아웃 확인
-            double CurrentTime = FPlatformTime::Seconds();
-            if (CurrentTime - CachedMsg->Timestamp > CacheTimeoutSeconds)
-            {
-                // 타임아웃된 항목은 제거하고 찾지 못한 것으로 처리
-                EndpointCache->Remove(SequenceNumber);
-                return false;
-            }
-
-            // 캐시된 메시지 반환
-            OutMessage = *CachedMsg;
-            return true;
-        }
-
-        // 캐시 정리
-        void Cleanup()
-        {
-            double CurrentTime = FPlatformTime::Seconds();
-            TArray<FIPv4Endpoint> EmptyEndpoints;
-
-            // 모든 엔드포인트에 대해 타임아웃된 항목 제거
-            for (auto& EndpointPair : CachedMessages)
-            {
-                TArray<uint16> TimeoutItems;
-
-                // 타임아웃된 항목 찾기
-                for (auto& CachePair : EndpointPair.Value)
-                {
-                    if (CurrentTime - CachePair.Value.Timestamp > CacheTimeoutSeconds)
-                    {
-                        TimeoutItems.Add(CachePair.Key);
-                    }
-                }
-
-                // 타임아웃된 항목 제거
-                for (uint16 Seq : TimeoutItems)
-                {
-                    EndpointPair.Value.Remove(Seq);
-                }
-
-                // 엔드포인트의 캐시가 비어있으면 나중에 제거하기 위해 표시
-                if (EndpointPair.Value.Num() == 0)
-                {
-                    EmptyEndpoints.Add(EndpointPair.Key);
-                }
-            }
-
-            // 빈 엔드포인트 제거
-            for (const FIPv4Endpoint& Endpoint : EmptyEndpoints)
-            {
-                CachedMessages.Remove(Endpoint);
-            }
-        }
-    };
-
-    // 중복 메시지 추적기
-    FMessageTracker DuplicateMessageTracker;
-
-    // 중복 메시지 추적 틱 핸들
-    FTSTicker::FDelegateHandle DuplicateTrackerTickHandle;
-
-    // 중복 메시지 추적 정리 간격 (초)
-    const float DUPLICATE_TRACKER_CLEANUP_INTERVAL = 60.0f;
-
-    // 메시지 캐시
-    FMessageCache MessageCache;
-
-    // 메시지 캐시 틱 핸들
-    FTSTicker::FDelegateHandle MessageCacheTickHandle;
-
-    // 메시지 캐시 정리 간격 (초)
-    const float MESSAGE_CACHE_CLEANUP_INTERVAL = 60.0f;
-
-    // 멱등성 캐시 정리 틱 핸들
-    FTSTicker::FDelegateHandle IdempotentCacheTickHandle;
-
-    // 멱등성 캐시 정리 간격 (초)
-    const float IDEMPOTENT_CACHE_CLEANUP_INTERVAL = 120.0f; // 2분
+    void SendMessageWithAck(const FIPv4Endpoint& Endpoint, const FNetworkMessage& Message);
+    void HandleMessageRetryRequest(const FNetworkMessage& Message, const FIPv4Endpoint& Sender);
 };
