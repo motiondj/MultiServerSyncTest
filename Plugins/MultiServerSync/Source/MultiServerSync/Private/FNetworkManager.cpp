@@ -374,36 +374,6 @@ bool FNetworkManager::Initialize()
     FTickerDelegate SequenceTickDelegate = FTickerDelegate::CreateRaw(this, &FNetworkManager::CheckSequenceManagement);
     SequenceManagementTickHandle = FTSTicker::GetCoreTicker().AddTicker(SequenceTickDelegate, SEQUENCE_MANAGEMENT_INTERVAL);
 
-    // 중복 메시지 추적 틱 추가
-    if (DuplicateTrackerTickHandle.IsValid())
-    {
-        FTSTicker::GetCoreTicker().RemoveTicker(DuplicateTrackerTickHandle);
-        DuplicateTrackerTickHandle.Reset();
-    }
-
-    // 중복 메시지 추적 초기화
-    DuplicateMessageTracker = FMessageTracker();
-    DuplicateMessageTracker.LastCleanupTime = FPlatformTime::Seconds();
-
-    // 중복 메시지 추적 틱 등록
-    FTickerDelegate DuplicateTrackerTickDelegate = FTickerDelegate::CreateRaw(this, &FNetworkManager::CheckDuplicateTracker);
-    DuplicateTrackerTickHandle = FTSTicker::GetCoreTicker().AddTicker(DuplicateTrackerTickDelegate, DUPLICATE_TRACKER_CLEANUP_INTERVAL);
-
-    // 메시지 캐시 초기화
-    MessageCache = FMessageCache();
-    MessageCache.LastCleanupTime = FPlatformTime::Seconds();
-
-    // 메시지 캐시 틱 등록
-    FTickerDelegate MessageCacheTickDelegate = FTickerDelegate::CreateRaw(this, &FNetworkManager::CheckMessageCache);
-    MessageCacheTickHandle = FTSTicker::GetCoreTicker().AddTicker(MessageCacheTickDelegate, MESSAGE_CACHE_CLEANUP_INTERVAL);
-
-    // 멱등성 캐시 초기화
-    IdempotentResults.Empty();
-
-    // 멱등성 캐시 정리 틱 등록
-    FTickerDelegate IdempotentCacheTickDelegate = FTickerDelegate::CreateRaw(this, &FNetworkManager::CheckIdempotentCache);
-    IdempotentCacheTickHandle = FTSTicker::GetCoreTicker().AddTicker(IdempotentCacheTickDelegate, IDEMPOTENT_CACHE_CLEANUP_INTERVAL);
-
     return true;
 }
 
@@ -473,13 +443,6 @@ void FNetworkManager::Shutdown()
     delete ReceiverWorker;
     ReceiverWorker = nullptr;
 
-    // 중복 메시지 추적 틱 해제
-    if (DuplicateTrackerTickHandle.IsValid())
-    {
-        FTSTicker::GetCoreTicker().RemoveTicker(DuplicateTrackerTickHandle);
-        DuplicateTrackerTickHandle.Reset();
-    }
-
     bIsInitialized = false;
     UE_LOG(LogMultiServerSync, Display, TEXT("Network Manager shutdown completed"));
 
@@ -521,20 +484,6 @@ void FNetworkManager::Shutdown()
 
     // 시퀀스 추적 정보 정리
     EndpointSequenceTrackers.Empty();
-
-    // 메시지 캐시 틱 해제
-    if (MessageCacheTickHandle.IsValid())
-    {
-        FTSTicker::GetCoreTicker().RemoveTicker(MessageCacheTickHandle);
-        MessageCacheTickHandle.Reset();
-    }
-
-    // 멱등성 캐시 정리 틱 해제
-    if (IdempotentCacheTickHandle.IsValid())
-    {
-        FTSTicker::GetCoreTicker().RemoveTicker(IdempotentCacheTickHandle);
-        IdempotentCacheTickHandle.Reset();
-    }
 }
 
 bool FNetworkManager::SendMessage(const FString& EndpointId, const TArray<uint8>& Message)
@@ -627,49 +576,6 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
     FNetworkMessage DeserializedMessage;
     if (DeserializedMessage.Deserialize(Data))
     {
-        // 중복 메시지 체크 (특정 메시지 유형 제외)
-        if (Message.GetType() != ENetworkMessageType::Discovery &&
-            Message.GetType() != ENetworkMessageType::DiscoveryResponse &&
-            Message.GetType() != ENetworkMessageType::MessageAck)
-        {
-            // 이미 처리한 메시지인지 확인
-            if (IsDuplicateMessage(Sender, Message.GetSequenceNumber()))
-            {
-                UE_LOG(LogMultiServerSync, Verbose, TEXT("Duplicate message detected (Sender: %s, Seq: %u, Type: %d)"),
-                    *Sender.ToString(), Message.GetSequenceNumber(), (int)Message.GetType());
-
-                // 캐시된 처리 결과 사용 (멱등성 처리)
-                if (ProcessCachedMessage(Sender, Message.GetSequenceNumber()))
-                {
-                    // 캐시된 처리 결과가 있는 경우
-                    return;
-                }
-
-                // 캐시된 처리 결과가 없는 경우, 기본 중복 처리
-                // 중복 메시지이지만, ACK가 필요한 메시지면 재확인 응답 전송
-                if (Message.GetFlags() & 1) // Flag = 1: ACK 필요
-                {
-                    // ACK 메시지 생성
-                    TArray<uint8> AckData;
-                    uint16 SequenceNumber = Message.GetSequenceNumber();
-                    AckData.SetNum(sizeof(uint16));
-                    FMemory::Memcpy(AckData.GetData(), &SequenceNumber, sizeof(uint16));
-
-                    FNetworkMessage AckMessage(ENetworkMessageType::MessageAck, AckData);
-                    AckMessage.SetProjectId(ProjectId);
-                    AckMessage.SetSequenceNumber(GetNextSequenceNumber());
-
-                    // ACK 메시지 전송
-                    SendMessageToEndpoint(Sender, AckMessage);
-
-                    UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent ACK for duplicate message (Seq: %u, to: %s)"),
-                        SequenceNumber, *Sender.ToString());
-                }
-
-                return; // 중복 메시지는 더 이상 처리하지 않음
-            }
-        }
-
         // 메시지 순서 확인 (일부 메시지 유형은 제외)
         if (Message.GetType() != ENetworkMessageType::Discovery &&
             Message.GetType() != ENetworkMessageType::DiscoveryResponse &&
@@ -679,23 +585,6 @@ void FNetworkManager::ProcessReceivedData(const TArray<uint8>& Data, const FIPv4
             if (!ShouldProcessMessage(Sender, Message.GetSequenceNumber()))
             {
                 return; // 순서가 맞지 않는 메시지는 처리하지 않음
-            }
-        }
-
-        // 처리할 메시지로 판단되면 추적에 추가 (특정 메시지 유형 제외)
-        if (Message.GetType() != ENetworkMessageType::Discovery &&
-            Message.GetType() != ENetworkMessageType::DiscoveryResponse &&
-            Message.GetType() != ENetworkMessageType::MessageAck)
-        {
-            // 처리한 메시지 추적에 추가
-            AddProcessedMessage(Sender, Message.GetSequenceNumber());
-
-            // 처리한 메시지 캐싱 (메시지 타입에 따라 캐싱 여부 결정)
-            if (Message.GetType() == ENetworkMessageType::Data ||
-                Message.GetType() == ENetworkMessageType::Command ||
-                Message.GetType() == ENetworkMessageType::Custom)
-            {
-                CacheProcessedMessage(Sender, Message);
             }
         }
 
@@ -1391,28 +1280,6 @@ void FNetworkManager::HandleDataMessage(const FNetworkMessage& Message, const FI
 {
     // 데이터 메시지 처리 (HandleCommandMessage와 동일한 로직)
     HandleCommandMessage(Message, Sender);
-
-    // 멱등성 예제 - 중요한 상태 변경을 일으키는 메시지인 경우
-    if (Message.GetFlags() & 2) // 가정: Flag = 2는 중요한 상태 변경 메시지
-    {
-        // 작업 ID 생성 (메시지 유형 + 시퀀스 번호 + 발신자 엔드포인트)
-        FString OperationId = FString::Printf(TEXT("DataMsg_%d_%u_%s"),
-            static_cast<int>(Message.GetType()),
-            Message.GetSequenceNumber(),
-            *Sender.ToString());
-
-        // 멱등성 보장 작업 수행
-        ExecuteIdempotentOperation(OperationId, Message.GetSequenceNumber(), [&]() {
-            // 여기에 멱등성이 필요한 중요한 작업 수행
-            // 예: 중요한 상태 변경, 데이터베이스 업데이트 등
-
-            // 간단한 예제:
-            UE_LOG(LogMultiServerSync, Display, TEXT("Executing important state change operation [%s]"), *OperationId);
-
-            // 작업 성공 여부와 결과 반환
-            return FIdempotentResult::Success();
-            });
-    }
 
     if (Message.GetFlags() & 1) // Flag = 1: ACK 필요
     {
@@ -3884,251 +3751,4 @@ bool FNetworkManager::ShouldProcessMessage(const FIPv4Endpoint& Sender, uint16 S
     }
 
     return true;
-}
-
-// 중복 메시지 추적 관리 틱 함수
-bool FNetworkManager::CheckDuplicateTracker(float DeltaTime)
-{
-    if (!bIsInitialized)
-    {
-        return true; // 계속 틱 유지
-    }
-
-    double CurrentTime = FPlatformTime::Seconds();
-
-    // 정리 간격마다 중복 메시지 추적 데이터 정리
-    if (CurrentTime - DuplicateMessageTracker.LastCleanupTime >= DuplicateMessageTracker.CleanupIntervalSeconds)
-    {
-        CleanupMessageTracker();
-        DuplicateMessageTracker.LastCleanupTime = CurrentTime;
-    }
-
-    return true; // 계속 틱 유지
-}
-
-// 메시지가 중복인지 확인하고 처리 여부 반환
-bool FNetworkManager::IsDuplicateMessage(const FIPv4Endpoint& Sender, uint16 SequenceNumber)
-{
-    // 이미 처리한 메시지인지 확인
-    return DuplicateMessageTracker.IsMessageProcessed(Sender, SequenceNumber);
-}
-
-// 처리된 메시지 추적 추가
-void FNetworkManager::AddProcessedMessage(const FIPv4Endpoint& Sender, uint16 SequenceNumber)
-{
-    DuplicateMessageTracker.AddProcessedMessage(Sender, SequenceNumber);
-}
-
-// 중복 메시지 추적 정리
-void FNetworkManager::CleanupMessageTracker()
-{
-    DuplicateMessageTracker.Cleanup();
-
-    UE_LOG(LogMultiServerSync, Verbose, TEXT("Cleaned up duplicate message tracker"));
-}
-
-// 메시지 캐시 관리 틱 함수
-bool FNetworkManager::CheckMessageCache(float DeltaTime)
-{
-    if (!bIsInitialized)
-    {
-        return true; // 계속 틱 유지
-    }
-
-    double CurrentTime = FPlatformTime::Seconds();
-
-    // 정리 간격마다 메시지 캐시 정리
-    if (CurrentTime - MessageCache.LastCleanupTime >= MESSAGE_CACHE_CLEANUP_INTERVAL)
-    {
-        CleanupMessageCache();
-        MessageCache.LastCleanupTime = CurrentTime;
-    }
-
-    return true; // 계속 틱 유지
-}
-
-// 메시지 캐싱
-void FNetworkManager::CacheProcessedMessage(const FIPv4Endpoint& Sender, const FNetworkMessage& Message, const TArray<uint8>& Response)
-{
-    MessageCache.CacheMessage(Sender, Message.GetSequenceNumber(), Message, Response);
-}
-
-// 캐시된 메시지 처리
-bool FNetworkManager::ProcessCachedMessage(const FIPv4Endpoint& Sender, uint16 SequenceNumber)
-{
-    FCachedMessage CachedMsg;
-    if (!MessageCache.GetCachedMessage(Sender, SequenceNumber, CachedMsg))
-    {
-        return false;
-    }
-
-    UE_LOG(LogMultiServerSync, Verbose, TEXT("Using cached message (Sender: %s, Seq: %u, Type: %d)"),
-        *Sender.ToString(), SequenceNumber, (int)CachedMsg.Message.GetType());
-
-    // 캐시된 메시지가 응답 데이터를 가지고 있으면 (멱등 처리를 위한 이전 결과)
-    if (CachedMsg.ResponseData.Num() > 0)
-    {
-        // ACK가 필요한 메시지면 ACK 다시 전송
-        if (CachedMsg.Message.GetFlags() & 1) // Flag = 1: ACK 필요
-        {
-            // ACK 메시지 생성
-            TArray<uint8> AckData;
-            AckData.SetNum(sizeof(uint16));
-            FMemory::Memcpy(AckData.GetData(), &SequenceNumber, sizeof(uint16));
-
-            FNetworkMessage AckMessage(ENetworkMessageType::MessageAck, AckData);
-            AckMessage.SetProjectId(ProjectId);
-            AckMessage.SetSequenceNumber(GetNextSequenceNumber());
-
-            // ACK 메시지 전송
-            SendMessageToEndpoint(Sender, AckMessage);
-
-            UE_LOG(LogMultiServerSync, Verbose, TEXT("Sent ACK for cached message (Seq: %u, to: %s)"),
-                SequenceNumber, *Sender.ToString());
-        }
-
-        // 필요한 경우 캐시된 응답 데이터를 다시 전송
-        // (이 예제에서는 구현하지 않음 - 멱등 처리를 위해 필요한 경우 확장)
-    }
-
-    return true;
-}
-
-// 메시지 캐시 정리
-void FNetworkManager::CleanupMessageCache()
-{
-    MessageCache.Cleanup();
-
-    UE_LOG(LogMultiServerSync, Verbose, TEXT("Cleaned up message cache"));
-}
-
-// 멱등성 처리 결과 저장
-void FNetworkManager::StoreIdempotentResult(uint16 SequenceNumber, const FIdempotentResult& Result)
-{
-    // 결과 저장 (기존 값 덮어쓰기)
-    IdempotentResults.Add(SequenceNumber, Result);
-
-    // 캐시 크기 제한 (간단한 구현)
-    if (IdempotentResults.Num() > 1000) // 최대 1000개 항목
-    {
-        // 오래된 항목부터 삭제 (정확한 구현은 더 복잡할 수 있음)
-        CleanupIdempotentCache();
-    }
-}
-
-// 멱등성 처리 결과 가져오기
-bool FNetworkManager::GetIdempotentResult(uint16 SequenceNumber, FIdempotentResult& OutResult)
-{
-    FIdempotentResult* Result = IdempotentResults.Find(SequenceNumber);
-    if (!Result)
-    {
-        return false;
-    }
-
-    // 캐시 만료 확인
-    double CurrentTime = FPlatformTime::Seconds();
-    if (CurrentTime - Result->Timestamp > IDEMPOTENT_CACHE_TIMEOUT)
-    {
-        // 만료된 항목 제거
-        IdempotentResults.Remove(SequenceNumber);
-        return false;
-    }
-
-    // 결과 반환
-    OutResult = *Result;
-    return true;
-}
-
-// 멱등성 캐시 정리
-void FNetworkManager::CleanupIdempotentCache()
-{
-    double CurrentTime = FPlatformTime::Seconds();
-    TArray<uint16> ExpiredItems;
-
-    // 만료된 항목 찾기
-    for (auto& Pair : IdempotentResults)
-    {
-        if (CurrentTime - Pair.Value.Timestamp > IDEMPOTENT_CACHE_TIMEOUT)
-        {
-            ExpiredItems.Add(Pair.Key);
-        }
-    }
-
-    // 만료된 항목 제거
-    for (uint16 Seq : ExpiredItems)
-    {
-        IdempotentResults.Remove(Seq);
-    }
-
-    // 항목이 너무 많으면 가장 오래된 항목부터 제거
-    if (IdempotentResults.Num() > 1000)
-    {
-        // 시간 기준으로 정렬된 배열 생성
-        TArray<TPair<uint16, double>> SortedItems;
-        for (const auto& Pair : IdempotentResults)
-        {
-            SortedItems.Add(TPair<uint16, double>(Pair.Key, Pair.Value.Timestamp));
-        }
-
-        // 타임스탬프 기준으로 정렬
-        SortedItems.Sort([](const TPair<uint16, double>& A, const TPair<uint16, double>& B) {
-            return A.Value < B.Value; // 오래된 항목이 앞에 오도록
-            });
-
-        // 가장 오래된 항목의 30%를 제거
-        int32 RemoveCount = FMath::Min(300, SortedItems.Num() / 3);
-        for (int32 i = 0; i < RemoveCount && i < SortedItems.Num(); ++i)
-        {
-            IdempotentResults.Remove(SortedItems[i].Key);
-        }
-    }
-
-    UE_LOG(LogMultiServerSync, Verbose, TEXT("Cleaned up idempotent cache: %d items remaining"), IdempotentResults.Num());
-}
-
-// 멱등성 보장 작업 수행
-bool FNetworkManager::ExecuteIdempotentOperation(const FString& OperationId, uint16 SequenceNumber,
-    TFunction<FIdempotentResult()> Operation)
-{
-    // 이미 처리된 작업인지 확인
-    FIdempotentResult CachedResult;
-    if (GetIdempotentResult(SequenceNumber, CachedResult))
-    {
-        // 이미 처리된 작업이면 캐시된 결과 반환
-        UE_LOG(LogMultiServerSync, Verbose, TEXT("Using cached result for idempotent operation [%s] seq=%u"),
-            *OperationId, SequenceNumber);
-        return CachedResult.bSuccess;
-    }
-
-    // 새로운 작업 실행
-    UE_LOG(LogMultiServerSync, Verbose, TEXT("Executing idempotent operation [%s] seq=%u"),
-        *OperationId, SequenceNumber);
-
-    // 작업 실행 및 결과 캐싱
-    FIdempotentResult Result = Operation();
-    StoreIdempotentResult(SequenceNumber, Result);
-
-    // 작업 성공 여부 반환
-    return Result.bSuccess;
-}
-
-// 멱등성 캐시 정리 틱 함수
-bool FNetworkManager::CheckIdempotentCache(float DeltaTime)
-{
-    if (!bIsInitialized)
-    {
-        return true; // 계속 틱 유지
-    }
-
-    // 주기적으로 캐시 정리
-    static double LastCleanupTime = FPlatformTime::Seconds();
-    double CurrentTime = FPlatformTime::Seconds();
-
-    if (CurrentTime - LastCleanupTime >= IDEMPOTENT_CACHE_CLEANUP_INTERVAL)
-    {
-        CleanupIdempotentCache();
-        LastCleanupTime = CurrentTime;
-    }
-
-    return true; // 계속 틱 유지
 }
