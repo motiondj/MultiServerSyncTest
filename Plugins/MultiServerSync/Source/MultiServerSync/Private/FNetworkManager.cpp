@@ -4002,17 +4002,22 @@ void FNetworkManager::CleanupMessageCache()
     UE_LOG(LogMultiServerSync, Verbose, TEXT("Cleaned up message cache"));
 }
 
-// FNetworkManager.cpp 파일 수정 부분
-
 // 멱등성 처리 결과 저장
-void FNetworkLatencyStats::StoreIdempotentResult(uint16 SequenceNumber, const FIdempotentResult& Result)
+void FNetworkManager::StoreIdempotentResult(uint16 SequenceNumber, const FIdempotentResult& Result)
 {
     // 결과 저장 (기존 값 덮어쓰기)
     IdempotentResults.Add(SequenceNumber, Result);
+
+    // 캐시 크기 제한 (간단한 구현)
+    if (IdempotentResults.Num() > 1000) // 최대 1000개 항목
+    {
+        // 오래된 항목부터 삭제 (정확한 구현은 더 복잡할 수 있음)
+        CleanupIdempotentCache();
+    }
 }
 
 // 멱등성 처리 결과 가져오기
-bool FNetworkLatencyStats::GetIdempotentResult(uint16 SequenceNumber, FIdempotentResult& OutResult)
+bool FNetworkManager::GetIdempotentResult(uint16 SequenceNumber, FIdempotentResult& OutResult)
 {
     FIdempotentResult* Result = IdempotentResults.Find(SequenceNumber);
     if (!Result)
@@ -4035,7 +4040,7 @@ bool FNetworkLatencyStats::GetIdempotentResult(uint16 SequenceNumber, FIdempoten
 }
 
 // 멱등성 캐시 정리
-void FNetworkLatencyStats::CleanupIdempotentCache()
+void FNetworkManager::CleanupIdempotentCache()
 {
     double CurrentTime = FPlatformTime::Seconds();
     TArray<uint16> ExpiredItems;
@@ -4054,6 +4059,31 @@ void FNetworkLatencyStats::CleanupIdempotentCache()
     {
         IdempotentResults.Remove(Seq);
     }
+
+    // 항목이 너무 많으면 가장 오래된 항목부터 제거
+    if (IdempotentResults.Num() > 1000)
+    {
+        // 시간 기준으로 정렬된 배열 생성
+        TArray<TPair<uint16, double>> SortedItems;
+        for (const auto& Pair : IdempotentResults)
+        {
+            SortedItems.Add(TPair<uint16, double>(Pair.Key, Pair.Value.Timestamp));
+        }
+
+        // 타임스탬프 기준으로 정렬
+        SortedItems.Sort([](const TPair<uint16, double>& A, const TPair<uint16, double>& B) {
+            return A.Value < B.Value; // 오래된 항목이 앞에 오도록
+            });
+
+        // 가장 오래된 항목의 30%를 제거
+        int32 RemoveCount = FMath::Min(300, SortedItems.Num() / 3);
+        for (int32 i = 0; i < RemoveCount && i < SortedItems.Num(); ++i)
+        {
+            IdempotentResults.Remove(SortedItems[i].Key);
+        }
+    }
+
+    UE_LOG(LogMultiServerSync, Verbose, TEXT("Cleaned up idempotent cache: %d items remaining"), IdempotentResults.Num());
 }
 
 // 멱등성 보장 작업 수행

@@ -7,9 +7,6 @@
 #include "Interfaces/IPv4/IPv4Endpoint.h" // FIPv4Endpoint 타입을 위해 추가
 #include "NetworkTypes.h" // FNetworkLatencyStats 정의가 포함된 헤더
 
-// FIdempotentResult 전방 선언 추가
-struct FIdempotentResult;
-
 /**
  * Common interface for all environment detection systems
  */
