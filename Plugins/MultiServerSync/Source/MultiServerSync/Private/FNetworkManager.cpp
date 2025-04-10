@@ -374,6 +374,11 @@ bool FNetworkManager::Initialize()
     FTickerDelegate SequenceTickDelegate = FTickerDelegate::CreateRaw(this, &FNetworkManager::CheckSequenceManagement);
     SequenceManagementTickHandle = FTSTicker::GetCoreTicker().AddTicker(SequenceTickDelegate, SEQUENCE_MANAGEMENT_INTERVAL);
 
+    // 메시지 확인 관련 변수 초기화
+    LastRetryCheckTime = FPlatformTime::Seconds();
+    PendingAcknowledgements.Empty();
+    EndpointSequenceMap.Empty();
+
     return true;
 }
 
@@ -484,6 +489,17 @@ void FNetworkManager::Shutdown()
 
     // 시퀀스 추적 정보 정리
     EndpointSequenceTrackers.Empty();
+
+    // 메시지 재전송 틱 해제
+    if (MessageRetryTickHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(MessageRetryTickHandle);
+        MessageRetryTickHandle.Reset();
+    }
+
+    // 확인 대기 중인 메시지 정리
+    PendingAcknowledgements.Empty();
+    EndpointSequenceMap.Empty();
 }
 
 bool FNetworkManager::SendMessage(const FString& EndpointId, const TArray<uint8>& Message)
@@ -1281,6 +1297,7 @@ void FNetworkManager::HandleDataMessage(const FNetworkMessage& Message, const FI
     // 데이터 메시지 처리 (HandleCommandMessage와 동일한 로직)
     HandleCommandMessage(Message, Sender);
 
+    // ACK 필요 여부 확인 (플래그의 첫 번째 비트 확인)
     if (Message.GetFlags() & 1) // Flag = 1: ACK 필요
     {
         // ACK 메시지 생성
@@ -3318,6 +3335,7 @@ bool FNetworkManager::SendMessageWithAck(const FIPv4Endpoint& Endpoint, const FN
 }
 
 // ACK 메시지 처리
+// HandleMessageAck 함수 수정 - 약 4270줄 근처
 void FNetworkManager::HandleMessageAck(const FNetworkMessage& Message, const FIPv4Endpoint& Sender)
 {
     // ACK 메시지에서 원본 시퀀스 번호 추출
@@ -3340,6 +3358,15 @@ void FNetworkManager::HandleMessageAck(const FNetworkMessage& Message, const FIP
 
     // 메시지 상태 업데이트
     FMessageAckData& AckData = PendingAcknowledgements[AckedSequence];
+
+    // 수신자가 예상 수신자와 다른 경우 확인
+    if (AckData.TargetEndpoint != Sender)
+    {
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Received ACK from unexpected sender: %s (expected: %s)"),
+            *Sender.ToString(), *AckData.TargetEndpoint.ToString());
+        // 잘못된 ACK일 수 있으나, 혹시 모르니 처리는 함
+    }
+
     AckData.Status = EMessageAckStatus::Acknowledged;
 
     UE_LOG(LogMultiServerSync, Verbose, TEXT("Message acknowledged (Seq: %u, Endpoint: %s)"),
@@ -3442,48 +3469,6 @@ bool FNetworkManager::CheckMessageRetries(float DeltaTime)
     LastRetryCheckTime = CurrentTime;
 
     return true; // 계속 틱 유지
-}
-
-// 메시지 재전송
-void FNetworkManager::RetryMessage(uint16 SequenceNumber)
-{
-    if (!PendingAcknowledgements.Contains(SequenceNumber))
-    {
-        return;
-    }
-
-    FMessageAckData& AckData = PendingAcknowledgements[SequenceNumber];
-
-    // 현재 시간
-    double CurrentTime = FPlatformTime::Seconds();
-
-    // 시도 횟수 증가
-    AckData.AttemptCount++;
-    AckData.LastAttemptTime = CurrentTime;
-
-    // 메시지 재전송을 위한 가상의 메시지 생성
-    // 실제 구현에서는 원본 메시지 내용을 저장해 두어야 함
-    TArray<uint8> DummyData; // 실제 구현에서는 저장된 원본 데이터 사용
-    FNetworkMessage Message(ENetworkMessageType::Data, DummyData);
-    Message.SetProjectId(ProjectId);
-    Message.SetSequenceNumber(SequenceNumber);
-
-    // 메시지 재전송
-    bool bSuccess = SendMessageToEndpoint(AckData.TargetEndpoint, Message);
-
-    // 상태 업데이트
-    if (bSuccess)
-    {
-        AckData.Status = EMessageAckStatus::Sent;
-        UE_LOG(LogMultiServerSync, Verbose, TEXT("Retrying message (Seq: %u, Attempt: %d, Endpoint: %s)"),
-            SequenceNumber, AckData.AttemptCount, *AckData.TargetEndpoint.ToString());
-    }
-    else
-    {
-        AckData.Status = EMessageAckStatus::Failed;
-        UE_LOG(LogMultiServerSync, Warning, TEXT("Failed to retry message (Seq: %u, Endpoint: %s)"),
-            SequenceNumber, *AckData.TargetEndpoint.ToString());
-    }
 }
 
 // 신뢰성 있는 메시지 전송
@@ -3751,4 +3736,46 @@ bool FNetworkManager::ShouldProcessMessage(const FIPv4Endpoint& Sender, uint16 S
     }
 
     return true;
+}
+
+// 메시지 재전송 함수
+void FNetworkManager::RetryMessage(uint16 SequenceNumber)
+{
+    if (!PendingAcknowledgements.Contains(SequenceNumber))
+    {
+        return;
+    }
+
+    FMessageAckData& AckData = PendingAcknowledgements[SequenceNumber];
+
+    // 현재 시간
+    double CurrentTime = FPlatformTime::Seconds();
+
+    // 시도 횟수 증가
+    AckData.AttemptCount++;
+    AckData.LastAttemptTime = CurrentTime;
+
+    // 메시지 재전송을 위한 가상의 메시지 생성
+    // 실제 구현에서는 원본 메시지 내용을 저장해 두어야 함
+    TArray<uint8> DummyData; // 실제 구현에서는 저장된 원본 데이터 사용
+    FNetworkMessage Message(ENetworkMessageType::Data, DummyData);
+    Message.SetProjectId(ProjectId);
+    Message.SetSequenceNumber(SequenceNumber);
+
+    // 메시지 재전송
+    bool bSuccess = SendMessageToEndpoint(AckData.TargetEndpoint, Message);
+
+    // 상태 업데이트
+    if (bSuccess)
+    {
+        AckData.Status = EMessageAckStatus::Sent;
+        UE_LOG(LogMultiServerSync, Verbose, TEXT("Retrying message (Seq: %u, Attempt: %d, Endpoint: %s)"),
+            SequenceNumber, AckData.AttemptCount, *AckData.TargetEndpoint.ToString());
+    }
+    else
+    {
+        AckData.Status = EMessageAckStatus::Failed;
+        UE_LOG(LogMultiServerSync, Warning, TEXT("Failed to retry message (Seq: %u, Endpoint: %s)"),
+            SequenceNumber, *AckData.TargetEndpoint.ToString());
+    }
 }
